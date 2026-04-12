@@ -1,47 +1,42 @@
-import pandas as pd
-import requests
-import json
-import os
-import io
-import time
-from datetime import datetime, timedelta
-import pytz
+name: 配当スクリーナー
 
-JST = pytz.timezone('Asia/Tokyo')
+on:
+  schedule:
+    - cron: "0 0,3,6,9,12 * * 1-5"
+  workflow_dispatch:
 
+permissions:
+  contents: write
 
-def get_jquants_token():
-    """J-QuantsのAPIトークンを取得"""
-    email    = os.environ["JQUANTS_EMAIL"]
-    password = os.environ["JQUANTS_PASSWORD"]
+jobs:
+  screen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
 
-    # リフレッシュトークン取得
-    resp = requests.post(
-        "https://api.jquants.com/v1/token/auth_user",
-        json={"mailaddress": email, "password": password},
-        timeout=30
-    )
-    resp.raise_for_status()
-    refresh_token = resp.json()["refreshToken"]
+    steps:
+      - name: チェックアウト
+        uses: actions/checkout@v4
 
-    # IDトークン取得
-    resp2 = requests.post(
-        "https://api.jquants.com/v1/token/auth_refresh",
-        params={"refreshtoken": refresh_token},
-        timeout=30
-    )
-    resp2.raise_for_status()
-    id_token = resp2.json()["idToken"]
-    print("J-Quants認証成功")
-    return id_token
+      - name: Python セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
 
+      - name: 依存関係インストール
+        run: pip install -r scripts/requirements.txt
 
-def get_prime_market_stocks(token: str):
-    """プライム市場の銘柄一覧をJ-Quantsから取得"""
-    resp = requests.get(
-        "https://api.jquants.com/v1/listed/info",
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=30
-    )
-    resp.raise_for_status()
-    df = pd.DataFrame(resp.​​​​​​​​​​​​​​​​
+      - name: スクリーナー実行
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          JQUANTS_EMAIL: ${{ secrets.JQUANTS_EMAIL }}
+          JQUANTS_PASSWORD: ${{ secrets.JQUANTS_PASSWORD }}
+        run: python scripts/screener.py
+
+      - name: 結果コミット & プッシュ
+        run: |
+          git config user.email "action@github.com"
+          git config user.name  "GitHub Actions"
+          git add docs/results.json
+          git diff --staged --quiet || \
+            git commit -m "screening: $(TZ=Asia/Tokyo date +'%Y-%m-%d %H:%M JS​​​​​​​​​​​​​​​​
