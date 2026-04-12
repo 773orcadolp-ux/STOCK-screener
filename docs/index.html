@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>配当利回りスクリーナー</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, sans-serif; background: #f0f4f8; color: #1a202c; }
+  header { background: #1a365d; color: white; padding: 1.2rem 2rem; }
+  header h1 { font-size: 1.3rem; }
+  header p  { font-size: .85rem; opacity: .8; margin-top: .3rem; }
+  .container { max-width: 1200px; margin: 1.5rem auto; padding: 0 1rem; }
+  .card { background: white; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.08);
+          margin-bottom: 1.5rem; overflow: hidden; }
+  .card-header { padding: .9rem 1.2rem; font-weight: 700; font-size: 1rem; }
+  .best-header   { background: #744210; color: white; }
+  .better-header { background: #276749; color: white; }
+  table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+  th { background: #edf2f7; padding: .6rem .8rem; text-align: right;
+       font-weight: 600; white-space: nowrap; border-bottom: 2px solid #e2e8f0; }
+  th:first-child, th:nth-child(2) { text-align: left; }
+  td { padding: .55rem .8rem; text-align: right; border-bottom: 1px solid #edf2f7; }
+  td:first-child, td:nth-child(2) { text-align: left; }
+  tr:hover td { background: #fffff0; }
+  .badge-best   { background: #744210; color: white; padding: 2px 7px;
+                  border-radius: 4px; font-size: .7rem; }
+  .badge-better { background: #276749; color: white; padding: 2px 7px;
+                  border-radius: 4px; font-size: .7rem; }
+  .neg  { color: #e53e3e; font-weight: 600; }
+  .pos  { color: #38a169; }
+  .empty { padding: 2rem; text-align: center; color: #718096; }
+  .summary { display: flex; gap: 1rem; margin-bottom: 1.5rem; flex-wrap: wrap; }
+  .stat { background: white; border-radius: 10px; padding: 1rem 1.5rem; flex: 1;
+          min-width: 140px; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+  .stat .label { font-size: .75rem; color: #718096; }
+  .stat .value { font-size: 1.8rem; font-weight: 700; margin-top: .2rem; }
+  .updated { font-size: .78rem; color: #718096; text-align: right; margin-bottom: 1rem; }
+  @media(max-width:700px){
+    th:nth-child(n+5), td:nth-child(n+5) { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>📊 配当利回りスクリーナー（東証プライム）</h1>
+  <p>5年間の配当利回り実績を基に「買い水準」を下回る銘柄を自動検出</p>
+</header>
+
+<div class="container">
+  <div id="updated" class="updated">読み込み中…</div>
+
+  <div class="summary">
+    <div class="stat">
+      <div class="label">🏆 Best買い水準</div>
+      <div class="value" id="cnt-best" style="color:#744210">—</div>
+    </div>
+    <div class="stat">
+      <div class="label">✅ Better買い水準</div>
+      <div class="value" id="cnt-better" style="color:#276749">—</div>
+    </div>
+  </div>
+
+  <!-- Best -->
+  <div class="card">
+    <div class="card-header best-header">
+      🏆 Best買い水準 — 現在株価 ≤ 年間配当 ÷ 5年最大利回り
+    </div>
+    <div id="table-best"></div>
+  </div>
+
+  <!-- Better -->
+  <div class="card">
+    <div class="card-header better-header">
+      ✅ Better買い水準 — 現在株価 ≤ 年間配当 ÷ 5年平均利回り
+    </div>
+    <div id="table-better"></div>
+  </div>
+</div>
+
+<script>
+const fmt = (n, d=1) => n == null ? '—' : Number(n).toFixed(d);
+
+function buildTable(stocks, priceKey, yieldKey, diffKey) {
+  if (!stocks || !stocks.length)
+    return '<div class="empty">該当銘柄なし</div>';
+
+  const rows = stocks.map(s => {
+    const diff = s[diffKey];
+    const cls  = diff < 0 ? 'neg' : 'pos';
+    return `<tr>
+      <td>${s.code}</td>
+      <td>${s.name}</td>
+      <td>${fmt(s.current_price, 1)}円</td>
+      <td>${fmt(s[priceKey], 1)}円</td>
+      <td class="${cls}">${diff >= 0 ? '+' : ''}${fmt(diff, 1)}%</td>
+      <td>${fmt(s.annual_div, 0)}円</td>
+      <td>${fmt(s.current_yield_pct, 2)}%</td>
+      <td>${fmt(s[yieldKey], 2)}%</td>
+    </tr>`;
+  }).join('');
+
+  return `<table>
+    <thead><tr>
+      <th>コード</th><th>銘柄名</th><th>現在株価</th>
+      <th>買い水準</th><th>乖離率</th><th>年間配当見込</th>
+      <th>現在利回り</th><th>5年実績利回り</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+async function load() {
+  const resp = await fetch('results.json?t=' + Date.now());
+  const data = await resp.json();
+
+  const d = new Date(data.updated_at);
+  document.getElementById('updated').textContent =
+    '最終更新: ' + d.toLocaleString('ja-JP', {timeZone:'Asia/Tokyo'}) + ' JST';
+
+  document.getElementById('cnt-best').textContent   = data.best_stocks.length   + '件';
+  document.getElementById('cnt-better').textContent = data.better_stocks.length + '件';
+
+  document.getElementById('table-best').innerHTML =
+    buildTable(data.best_stocks,   'best_price',   'max_yield_5y_pct', 'vs_best_pct');
+  document.getElementById('table-better').innerHTML =
+    buildTable(data.better_stocks, 'better_price', 'avg_yield_5y_pct', 'vs_better_pct');
+}
+
+load().catch(e => {
+  document.getElementById('updated').textContent = 'データ読み込みエラー: ' + e.message;
+});
+</script>
+</body>
+</html>
