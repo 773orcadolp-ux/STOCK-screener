@@ -11,12 +11,10 @@ JST = pytz.timezone('Asia/Tokyo')
 
 
 def get_jquants_token():
-    """リフレッシュトークンからIDトークンを取得"""
-    refresh_token = os.environ["JQUANTS_REFRESH_TOKEN"]
-
+    api_key = os.environ["JQUANTS_REFRESH_TOKEN"]
     resp = requests.post(
         "https://api.jquants.com/v1/token/auth_refresh",
-        params={"refreshtoken": refresh_token},
+        params={"refreshtoken": api_key},
         timeout=30
     )
     resp.raise_for_status()
