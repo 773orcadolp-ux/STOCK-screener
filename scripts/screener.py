@@ -29,25 +29,8 @@ def get_prime_market_stocks():
 
     df = pd.read_excel(io.BytesIO(resp.content))
 
-    # デバッグ用：列名を出力
-    print(f"列名一覧: {df.columns.tolist()}")
-    print(df.head(3).to_string())
-
-    # 列名で市場列・コード列を検索（列順に依存しない）
-    market_col = None
-    code_col   = None
-    for col in df.columns:
-        col_str = str(col)
-        if "市場" in col_str or "区分" in col_str:
-            market_col = col
-        if "コード" in col_str or "code" in col_str.lower():
-            code_col = col
-
-    # 列名で見つからない場合は位置で指定（JPX標準フォーマット）
-    if market_col is None:
-        market_col = df.columns[3]
-    if code_col is None:
-        code_col = df.columns[1]
+    market_col = '市場・商品区分'
+    code_col   = 'コード'
 
     print(f"市場列: {market_col} / コード列: {code_col}")
 
