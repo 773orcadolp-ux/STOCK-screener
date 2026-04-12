@@ -46,67 +46,72 @@ def get_prime_market_stocks():
 def analyze_stock(code: str) -> dict | None:
     ticker_str = f"{code}.T"
     tk = yf.Ticker(ticker_str)
+    JST = pytz.timezone('Asia/Tokyo')
+    now = datetime.now(JST)
 
     try:
-        info = tk.info
-    except Exception as e:
-        print(f"  [{code}] info取得失敗: {e}")
-        return None
-
-    # 現在株価
-    current_price = info.get("currentPrice") or info.get("regularMarketPrice")
-    if not current_price or current_price <= 0:
-        return None
-
-    # 年間配当額
-    annual_div = info.get("dividendRate") or info.get("trailingAnnualDividendRate")
-    if not annual_div or annual_div <= 0:
-        return None
-
-    # 5年平均利回り（%表記 → 小数に変換）
-    avg_yield_5y = info.get("fiveYearAvgDividendYield")
-    if not avg_yield_5y or avg_yield_5y <= 0:
-        return None
-    avg_yield_5y = avg_yield_5y / 100
-
-    # 5年最大利回りは履歴から取得を試みる（なければ平均×1.3で推定）
-    try:
-        hist      = tk.history(period="5y", auto_adjust=True)
-        dividends = tk.dividends
-        annual_yields = []
-        import pytz
-        JST = pytz.timezone('Asia/Tokyo')
-        now = datetime.now(JST)
-        if dividends.index.tzinfo is not None:
-            dividends.index = dividends.index.tz_convert(JST)
-        if hist.index.tzinfo is not None:
-            hist.index = hist.index.tz_convert(JST)
-        for year in range(now.year - 5, now.year):
-            yr_div    = dividends[dividends.index.year == year].sum()
-            yr_prices = hist[hist.index.year == year]["Close"]
-            if yr_div > 0 and not yr_prices.empty:
-                annual_yields.append(float(yr_div) / float(yr_prices.mean()))
-        max_yield = max(annual_yields) if annual_yields else avg_yield_5y * 1.3
+        # actions=True で配当データも同時取得
+        hist = tk.history(period="5y", actions=True, auto_adjust=False)
     except Exception:
-        max_yield = avg_yield_5y * 1.3
+        return None
+
+    if hist.empty or len(hist) < 50:
+        return None
+
+    current_price = float(hist["Close"].iloc[-1])
+    if current_price <= 0:
+        return None
+
+    # 配当データ抽出
+    if "Dividends" not in hist.columns:
+        return None
+
+    # タイムゾーン統一
+    if hist.index.tzinfo is not None:
+        hist.index = hist.index.tz_convert(JST)
+
+    div_hist = hist["Dividends"].copy()
+    div_hist = div_hist[div_hist > 0]
+
+    if div_hist.empty:
+        return None
+
+    # 年次利回り計算（5年分）
+    annual_yields = []
+    for year in range(now.year - 5, now.year):
+        yr_div    = float(div_hist[div_hist.index.year == year].sum())
+        yr_prices = hist[hist.index.year == year]["Close"]
+        if yr_div > 0 and not yr_prices.empty:
+            avg_price = float(yr_prices.mean())
+            if avg_price > 0:
+                annual_yields.append(yr_div / avg_price)
+
+    if not annual_yields:
+        return None
+
+    max_yield = max(annual_yields)
+    avg_yield = sum(annual_yields) / len(annual_yields)
+
+    # 直近1年の配当
+    one_yr_ago = now - timedelta(days=365)
+    recent_div = float(div_hist[div_hist.index >= one_yr_ago].sum())
+    if recent_div <= 0:
+        recent_div = float(div_hist.sum()) / max(len(annual_yields), 1)
+    if recent_div <= 0:
+        return None
 
     # 買い水準計算
-    best_price   = annual_div / max_yield
-    better_price = annual_div / avg_yield_5y
-
-    try:
-        name = info.get("longName") or info.get("shortName") or code
-    except Exception:
-        name = code
+    best_price   = recent_div / max_yield
+    better_price = recent_div / avg_yield
 
     return {
         "code":              code,
-        "name":              name,
+        "name":              code,  # 名前取得はスキップ（速度優先）
         "current_price":     round(current_price, 1),
-        "annual_div":        round(annual_div, 1),
-        "current_yield_pct": round(annual_div / current_price * 100, 2),
+        "annual_div":        round(recent_div, 1),
+        "current_yield_pct": round(recent_div / current_price * 100, 2),
         "max_yield_5y_pct":  round(max_yield * 100, 2),
-        "avg_yield_5y_pct":  round(avg_yield_5y * 100, 2),
+        "avg_yield_5y_pct":  round(avg_yield * 100, 2),
         "best_price":        round(best_price, 1),
         "better_price":      round(better_price, 1),
         "vs_best_pct":       round((current_price / best_price - 1) * 100, 1),
