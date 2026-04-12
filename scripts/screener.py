@@ -46,69 +46,56 @@ def get_prime_market_stocks():
 def analyze_stock(code: str) -> dict | None:
     ticker_str = f"{code}.T"
     tk = yf.Ticker(ticker_str)
-    now = datetime.now(JST)
 
     try:
-        hist = tk.history(
-            start=(now - timedelta(days=5 * 366)).strftime("%Y-%m-%d"),
-            end=now.strftime("%Y-%m-%d"),
-            auto_adjust=True,
-        )
-        dividends = tk.dividends
+        info = tk.info
     except Exception as e:
-        print(f"  [{code}] データ取得失敗: {e}")
+        print(f"  [{code}] info取得失敗: {e}")
         return None
 
-    if hist.empty or dividends.empty:
+    # 現在株価
+    current_price = info.get("currentPrice") or info.get("regularMarketPrice")
+    if not current_price or current_price <= 0:
         return None
 
-    # タイムゾーン統一
-    if hist.index.tzinfo is not None:
-        hist.index = hist.index.tz_convert(JST)
-    if dividends.index.tzinfo is not None:
-        dividends.index = dividends.index.tz_convert(JST)
-
-    # ── 5年間の年次利回り計算 ──
-    annual_yields = []
-    for year in range(now.year - 5, now.year):
-        yr_div = dividends[dividends.index.year == year].sum()
-        if yr_div <= 0:
-            continue
-        yr_prices = hist[hist.index.year == year]["Close"]
-        if yr_prices.empty:
-            continue
-        avg_price = yr_prices.mean()
-        if avg_price > 0:
-            annual_yields.append(float(yr_div) / float(avg_price))
-
-    if not annual_yields:
+    # 年間配当額
+    annual_div = info.get("dividendRate") or info.get("trailingAnnualDividendRate")
+    if not annual_div or annual_div <= 0:
         return None
 
-    max_yield = max(annual_yields)
-    avg_yield = sum(annual_yields) / len(annual_yields)
-
-    # ── 現在の年間配当見込（直近1年の実績を使用）──
-    # ※ EDINETのAPIキー取得後はここを予想配当に差し替え可能
-    one_yr_ago = now - timedelta(days=365)
-    recent_div = float(dividends[dividends.index >= one_yr_ago].sum())
-    if recent_div <= 0:
-        # 直近2年分÷2でフォールバック
-        two_yr_ago = now - timedelta(days=730)
-        recent_div = float(dividends[dividends.index >= two_yr_ago].sum()) / 2
-    if recent_div <= 0:
+    # 5年平均利回り（%表記 → 小数に変換）
+    avg_yield_5y = info.get("fiveYearAvgDividendYield")
+    if not avg_yield_5y or avg_yield_5y <= 0:
         return None
+    avg_yield_5y = avg_yield_5y / 100
 
-    current_price = float(hist["Close"].iloc[-1])
-    if current_price <= 0:
-        return None
-
-    # ── 買い水準計算 ──
-    best_price   = recent_div / max_yield    # 5年最大利回りベース
-    better_price = recent_div / avg_yield    # 5年平均利回りベース
-
-    # 銘柄名取得（失敗してもコードで代替）
+    # 5年最大利回りは履歴から取得を試みる（なければ平均×1.3で推定）
     try:
-        name = tk.info.get("longName") or tk.info.get("shortName") or code
+        hist      = tk.history(period="5y", auto_adjust=True)
+        dividends = tk.dividends
+        annual_yields = []
+        import pytz
+        JST = pytz.timezone('Asia/Tokyo')
+        now = datetime.now(JST)
+        if dividends.index.tzinfo is not None:
+            dividends.index = dividends.index.tz_convert(JST)
+        if hist.index.tzinfo is not None:
+            hist.index = hist.index.tz_convert(JST)
+        for year in range(now.year - 5, now.year):
+            yr_div    = dividends[dividends.index.year == year].sum()
+            yr_prices = hist[hist.index.year == year]["Close"]
+            if yr_div > 0 and not yr_prices.empty:
+                annual_yields.append(float(yr_div) / float(yr_prices.mean()))
+        max_yield = max(annual_yields) if annual_yields else avg_yield_5y * 1.3
+    except Exception:
+        max_yield = avg_yield_5y * 1.3
+
+    # 買い水準計算
+    best_price   = annual_div / max_yield
+    better_price = annual_div / avg_yield_5y
+
+    try:
+        name = info.get("longName") or info.get("shortName") or code
     except Exception:
         name = code
 
@@ -116,16 +103,15 @@ def analyze_stock(code: str) -> dict | None:
         "code":              code,
         "name":              name,
         "current_price":     round(current_price, 1),
-        "annual_div":        round(recent_div, 1),
-        "current_yield_pct": round(recent_div / current_price * 100, 2),
+        "annual_div":        round(annual_div, 1),
+        "current_yield_pct": round(annual_div / current_price * 100, 2),
         "max_yield_5y_pct":  round(max_yield * 100, 2),
-        "avg_yield_5y_pct":  round(avg_yield * 100, 2),
+        "avg_yield_5y_pct":  round(avg_yield_5y * 100, 2),
         "best_price":        round(best_price, 1),
         "better_price":      round(better_price, 1),
         "vs_best_pct":       round((current_price / best_price - 1) * 100, 1),
         "vs_better_pct":     round((current_price / better_price - 1) * 100, 1),
     }
-
 
 # ─────────────────────────────────────────────
 # 3. スクリーニング実行
