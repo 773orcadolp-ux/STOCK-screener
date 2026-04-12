@@ -29,8 +29,7 @@ jobs:
       - name: スクリーナー実行
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          JQUANTS_EMAIL: ${{ secrets.JQUANTS_EMAIL }}
-          JQUANTS_PASSWORD: ${{ secrets.JQUANTS_PASSWORD }}
+          JQUANTS_REFRESH_TOKEN: ${{ secrets.JQUANTS_REFRESH_TOKEN }}
         run: python scripts/screener.py
 
       - name: 結果コミット & プッシュ
