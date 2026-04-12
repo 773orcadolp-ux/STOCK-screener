@@ -215,6 +215,17 @@ def main():
     print("配当利回りスクリーナー 起動")
     print("=" * 50)
 
+    # ─── デバッグ用テスト ───
+    print("=== テスト: トヨタ(7203) ===")
+    hist = fetch_price_history("7203")
+    print(f"株価データ: {type(hist)} / {len(hist) if hist is not None else 'None'}")
+    if hist is not None:
+        print(f"最新株価: {hist['Close'].iloc[-1]}")
+    div = fetch_annual_dividends("7203")
+    print(f"配当データ: {div}")
+    print("=== テスト終了 ===")
+    # ───────────────────────
+
     try:
         codes_names = get_prime_market_stocks()
     except Exception as e:
