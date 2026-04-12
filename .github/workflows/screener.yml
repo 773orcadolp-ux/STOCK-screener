@@ -1,0 +1,42 @@
+name: 配当スクリーナー
+
+on:
+  schedule:
+    # 平日 JST 9:00/12:00/15:00/18:00/21:00 (= UTC 0/3/6/9/12時)
+    - cron: "0 0,3,6,9,12 * * 1-5"
+  workflow_dispatch:   # 手動実行ボタン
+
+permissions:
+  contents: write      # results.json をコミットするため
+
+jobs:
+  screen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: チェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: 依存関係インストール
+        run: pip install -r scripts/requirements.txt
+
+      - name: スクリーナー実行
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: python scripts/screener.py
+
+      - name: 結果コミット & プッシュ
+        run: |
+          git config user.email "action@github.com"
+          git config user.name  "GitHub Actions"
+          git add docs/results.json
+          git diff --staged --quiet || \
+            git commit -m "screening: $(TZ=Asia/Tokyo date +'%Y-%m-%d %H:%M JST')"
+          git push
