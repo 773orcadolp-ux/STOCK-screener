@@ -1,1 +1,110 @@
+import json
+from datetime import datetime
+
+with open("results/latest.json", encoding="utf-8") as f:
+    data = json.load(f)
+
+def yield_bar(yield_pct, max_pct=8.0):
+    width = min(int(yield_pct / max_pct * 100), 100)
+    color = "#22c55e" if yield_pct >= 4 else "#3b82f6" if yield_pct >= 2.5 else "#94a3b8"
+    return f'<div style="background:#e2e8f0;border-radius:4px;height:8px;width:100px;display:inline-block;vertical-align:middle"><div style="background:{color};height:8px;border-radius:4px;width:{width}%"></div></div>'
+
+def signal_badge(is_best, is_better):
+    if is_best:
+        return '<span style="background:#dcfce7;color:#166534;padding:2px 8px;border-radius:9999px;font-size:12px;font-weight:bold">🟢 Best</span>'
+    if is_better:
+        return '<span style="background:#dbeafe;color:#1e40af;padding:2px 8px;border-radius:9999px;font-size:12px;font-weight:bold">🔵 Better</span>'
+    return ''
+
+def row(s, highlight=False):
+    bg = '#f0fdf4' if s['is_best'] else '#eff6ff' if s['is_better'] else 'white'
+    diff_best   = s['current_price'] - s['buy_price_best']
+    diff_better = s['current_price'] - s['buy_price_better']
+    return f"""
+    <tr style="background:{bg};border-bottom:1px solid #e2e8f0">
+      <td style="padding:10px 8px">{signal_badge(s['is_best'], s['is_better'])}</td>
+      <td style="padding:10px 8px;font-weight:600">{s['name']}<br><span style="color:#64748b;font-size:12px">{s['ticker']}</span></td>
+      <td style="padding:10px 8px;text-align:right">¥{s['current_price']:,.1f}</td>
+      <td style="padding:10px 8px;text-align:right">¥{s['forward_annual_dividend']:,.1f}</td>
+      <td style="padding:10px 8px;text-align:right">{yield_bar(s['current_yield_pct'])} {s['current_yield_pct']}%</td>
+      <td style="padding:10px 8px;text-align:right">{s['max_yield_5y_pct']}%</td>
+      <td style="padding:10px 8px;text-align:right">{s['avg_yield_5y_pct']}%</td>
+      <td style="padding:10px 8px;text-align:right;{'color:#16a34a;font-weight:bold' if s['is_best'] else 'color:#64748b'}">¥{s['buy_price_best']:,.1f}<br><small style="color:#94a3b8">差: ¥{diff_best:+,.1f}</small></td>
+      <td style="padding:10px 8px;text-align:right;{'color:#1d4ed8;font-weight:bold' if s['is_better'] else 'color:#64748b'}">¥{s['buy_price_better']:,.1f}<br><small style="color:#94a3b8">差: ¥{diff_better:+,.1f}</small></td>
+    </tr>"""
+
+all_results = data.get("all_results", [])
+best_count   = data.get("best_count", 0)
+better_count = data.get("better_count", 0)
+updated      = data.get("last_updated", "")[:16].replace("T", " ")
+
+html = f"""<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>配当利回りスクリーナー｜プライム市場</title>
+<style>
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f8fafc; color: #1e293b; }}
+  .header {{ background: linear-gradient(135deg,#1e3a5f,#2563eb); color: white; padding: 32px 24px; }}
+  .header h1 {{ font-size: 24px; font-weight: 700; margin-bottom: 8px; }}
+  .header p  {{ opacity: .8; font-size: 14px; }}
+  .stats {{ display: flex; gap: 16px; padding: 20px 24px; flex-wrap: wrap; }}
+  .stat-card {{ background: white; border-radius: 12px; padding: 16px 24px; box-shadow: 0 1px 4px rgba(0,0,0,.08); min-width: 160px; }}
+  .stat-card .num {{ font-size: 32px; font-weight: 700; }}
+  .stat-card .label {{ color: #64748b; font-size: 13px; margin-top: 4px; }}
+  .table-wrap {{ overflow-x: auto; padding: 0 24px 40px; }}
+  table {{ width: 100%; border-collapse: collapse; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,.08); }}
+  th {{ background: #1e3a5f; color: white; padding: 12px 8px; text-align:right; font-size:13px; white-space:nowrap; }}
+  th:nth-child(1), th:nth-child(2) {{ text-align:left; }}
+  tr:hover {{ filter: brightness(.97); }}
+  .legend {{ padding: 0 24px 16px; display:flex; gap: 16px; font-size:13px; color:#475569; }}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>📊 配当利回りスクリーナー｜プライム市場</h1>
+  <p>過去5年の配当利回り実績をもとに買い水準を算定　｜　最終更新: {updated} JST</p>
+</div>
+
+<div class="stats">
+  <div class="stat-card"><div class="num" style="color:#16a34a">{best_count}</div><div class="label">🟢 Best 買い水準銘柄</div></div>
+  <div class="stat-card"><div class="num" style="color:#1d4ed8">{better_count}</div><div class="label">🔵 Better 買い水準銘柄</div></div>
+  <div class="stat-card"><div class="num">{data['total_screened']}</div><div class="label">スクリーニング対象銘柄数</div></div>
+</div>
+
+<div class="legend">
+  <span>🟢 Best = 現在株価 ≤ 年間配当÷過去5年<b>最大</b>利回り</span>
+  <span>🔵 Better = 現在株価 ≤ 年間配当÷過去5年<b>平均</b>利回り</span>
+</div>
+
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr>
+      <th style="text-align:left">シグナル</th>
+      <th style="text-align:left">銘柄</th>
+      <th>現在株価</th>
+      <th>年間配当(予)</th>
+      <th>現在利回り</th>
+      <th>5年最大利回り</th>
+      <th>5年平均利回り</th>
+      <th>Best買い水準</th>
+      <th>Better買い水準</th>
+    </tr>
+  </thead>
+  <tbody>
+    {''.join(row(s) for s in all_results)}
+  </tbody>
+</table>
+</div>
+</body>
+</html>"""
+
+import os
+os.makedirs("docs", exist_ok=True)
+with open("docs/index.html", "w", encoding="utf-8") as f:
+    f.write(html)
+print("HTML generated: docs/index.html")
 
