@@ -26,7 +26,8 @@ jobs:
       - name: 依存関係インストール
         run: pip install -r scripts/requirements.txt
 
-      - name: スクリーナー実行        env:
+      - name: スクリーナー実行
+      env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           JQUANTS_EMAIL: ${{ secrets.JQUANTS_EMAIL }}
           JQUANTS_PASSWORD: ${{ secrets.JQUANTS_PASSWORD }}
