@@ -2,18 +2,16 @@ name: Stock Screener
 
 on:
   schedule:
-    # 平日（月〜金）の日本時間 9:00, 12:00, 15:00 に実行
-    # GitHub ActionsはUTC基準 → JST-9時間
     - cron: '0 0 * * 1-5'   # JST 09:00
     - cron: '0 3 * * 1-5'   # JST 12:00
     - cron: '0 6 * * 1-5'   # JST 15:00
-  workflow_dispatch:          # 手動実行ボタンも有効化
+  workflow_dispatch:
 
 jobs:
   screen:
     runs-on: ubuntu-latest
     permissions:
-      contents: write         # docs/ への書き込みに必要
+      contents: write
 
     steps:
       - name: Checkout
@@ -25,16 +23,16 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install -r screener/requirements.txt
+        run: pip install -r scripts/requirements.txt   # ← scripts/ に合わせた
 
       - name: Run screener
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           GITHUB_PAGES_URL: ${{ secrets.GITHUB_PAGES_URL }}
-        run: python screener/screen.py
+        run: python scripts/screener.py                # ← scripts/ に合わせた
 
       - name: Generate HTML report
-        run: python screener/generate_html.py
+        run: python scripts/generate_html.py           # ← 後で追加するファイル
 
       - name: Commit and push results
         run: |
