@@ -15,7 +15,7 @@ def get_jquants_token():
     
     resp = requests.post(
         "https://api.jquants.com/v1/token/auth_refresh",
-        json={"refreshToken": api_key},  # paramsではなくjsonで送る
+        params={"refreshtoken": api_key},  # jsonではなくparamsで送る
         timeout=30
     )
     print(f"認証ステータス: {resp.status_code}")
