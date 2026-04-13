@@ -106,8 +106,8 @@ def analyze_ticker(ticker, price_data, dividends):
             "avg_yield_5y_pct": round(avg_yield_5y, 2),
             "buy_price_best": buy_price_best,
             "buy_price_better": buy_price_better,
-            "is_best": current_price <= buy_price_best,
-            "is_better": current_price <= buy_price_better,
+            "is_best": bool(current_price <= buy_price_best),
+　　　　　　　　"is_better": bool(current_price <= buy_price_better),
             "upside_to_best_pct": round((buy_price_best - current_price) / current_price * 100, 1),
             "upside_to_better_pct": round((buy_price_better - current_price) / current_price * 100, 1),
         }
