@@ -1,260 +1,241 @@
+import yfinance as yf
 import pandas as pd
-import requests
 import json
 import os
-import io
+import requests
+from datetime import datetime, date
 import time
-from datetime import datetime, timedelta
-import pytz
 
-JST = pytz.timezone('Asia/Tokyo')
+# =====================
+# 設定
+# =====================
+SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 
+# プライム市場の主要銘柄リスト（例示。実際はより広範なリストを使用）
+# JPX公式からCSVを取得する方式に後で拡張可能
+def get_prime_tickers():
+    """
+    JPXのプライム市場銘柄リストを取得。
+    本番ではhttps://www.jpx.co.jp/markets/statistics-equities/misc/01.htmlから取得推奨。
+    ここでは主要どころを例示。
+    """
+    # 代表的なプライム市場銘柄（証券コード + ".T" でyfinance対応）
+    sample_tickers = [
+        "7203.T",  # トヨタ
+        "6758.T",  # ソニー
+        "8306.T",  # 三菱UFJ
+        "9432.T",  # NTT
+        "6902.T",  # デンソー
+        "8316.T",  # 三井住友
+        "7974.T",  # 任天堂
+        "4063.T",  # 信越化学
+        "6861.T",  # キーエンス
+        "8058.T",  # 三菱商事
+        "9433.T",  # KDDI
+        "4502.T",  # 武田薬品
+        "8031.T",  # 三井物産
+        "6954.T",  # ファナック
+        "2914.T",  # JT
+        "8001.T",  # 伊藤忠
+        "6501.T",  # 日立
+        "6367.T",  # ダイキン
+        "4661.T",  # OLC
+        "7267.T",  # ホンダ
+    ]
+    return sample_tickers
 
-def get_jquants_token():
-    email    = os.environ["JQUANTS_EMAIL"]
-    password = os.environ["JQUANTS_PASSWORD"]
-    
-    resp = requests.post(
-        "https://api.jquants.com/v1/token/auth_user",
-        json={"mailaddress": email, "password": password},
-        timeout=30
-    )
-    print(f"ステータス: {resp.status_code}")
-    print(f"レスポンス: {resp.text[:300]}")
-    resp.raise_for_status()
-    refresh_token = resp.json()["refreshToken"]
+def fetch_stock_data(ticker_symbol):
+    """
+    yfinanceで株価・配当データを取得
+    """
+    try:
+        ticker = yf.Ticker(ticker_symbol)
+        info = ticker.info
 
-    resp2 = requests.post(
-        "https://api.jquants.com/v1/token/auth_refresh",
-        params={"refreshtoken": refresh_token},
-        timeout=30
-    )
-    resp2.raise_for_status()
-    print("J-Quants認証成功")
-    return resp2.json()["idToken"]
+        # 現在株価
+        current_price = info.get("currentPrice") or info.get("regularMarketPrice")
+        if not current_price:
+            return None
 
+        # 年間配当見込額（forward dividend）
+        forward_annual_dividend = info.get("dividendRate")  # 年間配当（予想）
+        if not forward_annual_dividend or forward_annual_dividend == 0:
+            return None  # 無配当はスキップ
 
-def get_prime_market_stocks(token: str):
-    """プライム市場の銘柄一覧をJ-Quantsから取得"""
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-    resp = requests.get(
-        "https://api.jquants.com/v1/listed/info",
-        headers=headers,
-        timeout=30
-    )
-    print(f"銘柄取得ステータス: {resp.status_code}")
-    print(f"レスポンス: {resp.text[:200]}")
-    resp.raise_for_status()
-    df = pd.DataFrame(resp.json()["info"])
-    prime = df[df["MarketCode"] == "0111"].copy()
-    codes_names = list(zip(
-        prime["Code"].astype(str).str[:4].tolist(),
-        prime["CompanyName"].tolist()
-    ))
-    print(f"プライム市場銘柄数: {len(codes_names)}")
-    return codes_names
+        # 過去5年の配当履歴を取得
+        dividends = ticker.dividends
+        history = ticker.history(period="5y")
 
+        if history.empty or dividends.empty:
+            return None
 
-def fetch_price_history(code: str, token: str) -> pd.DataFrame | None:
-    """J-Quantsから株価履歴を取得（過去2年）"""
-    end_d   = datetime.now().strftime("%Y%m%d")
-    start_d = (datetime.now() - timedelta(days=2 * 366)).strftime("%Y%m%d")
+        # 過去5年間の各日の配当利回りを算出するため、
+        # 年次配当合計と株価履歴を使って最大・平均利回りを計算
+        # 配当を年次集計
+        dividends.index = dividends.index.tz_localize(None) if dividends.index.tzinfo else dividends.index
+        history.index = history.index.tz_localize(None) if history.index.tzinfo else history.index
 
-    resp = requests.get(
-        "https://api.jquants.com/v1/prices/daily_quotes",
-        headers={"Authorization": f"Bearer {token}"},
-        params={"code": code + "0", "from": start_d, "to": end_d},
-        timeout=30
-    )
-    if resp.status_code != 200:
+        annual_divs = dividends.resample("Y").sum()
+        annual_divs.index = annual_divs.index.year
+
+        yearly_yields = []
+        for year, annual_div in annual_divs.items():
+            if annual_div == 0:
+                continue
+            year_prices = history[history.index.year == year]["Close"]
+            if year_prices.empty:
+                continue
+            avg_price_year = year_prices.mean()
+            if avg_price_year > 0:
+                yield_pct = (annual_div / avg_price_year) * 100
+                yearly_yields.append(yield_pct)
+
+        if not yearly_yields:
+            return None
+
+        max_yield_5y = max(yearly_yields)    # 過去5年最大利回り
+        avg_yield_5y = sum(yearly_yields) / len(yearly_yields)  # 過去5年平均利回り
+
+        if max_yield_5y == 0 or avg_yield_5y == 0:
+            return None
+
+        # 買い水準株価の算出
+        buy_price_best   = round(forward_annual_dividend / (max_yield_5y / 100), 1)
+        buy_price_better = round(forward_annual_dividend / (avg_yield_5y / 100), 1)
+
+        current_yield = round((forward_annual_dividend / current_price) * 100, 2)
+
+        return {
+            "ticker": ticker_symbol,
+            "name": info.get("longName", ticker_symbol),
+            "current_price": current_price,
+            "forward_annual_dividend": forward_annual_dividend,
+            "current_yield_pct": current_yield,
+            "max_yield_5y_pct": round(max_yield_5y, 2),
+            "avg_yield_5y_pct": round(avg_yield_5y, 2),
+            "buy_price_best": buy_price_best,
+            "buy_price_better": buy_price_better,
+            "is_best":   current_price <= buy_price_best,
+            "is_better": current_price <= buy_price_better,
+            "upside_to_best_pct":   round((buy_price_best   - current_price) / current_price * 100, 1),
+            "upside_to_better_pct": round((buy_price_better - current_price) / current_price * 100, 1),
+        }
+
+    except Exception as e:
+        print(f"Error fetching {ticker_symbol}: {e}")
         return None
 
-    data = resp.json().get("daily_quotes", [])
-    if not data:
-        return None
 
-    df = pd.DataFrame(data)
-    df["Date"] = pd.to_datetime(df["Date"])
-    df = df.sort_values("Date").set_index("Date")
-    df = df.rename(columns={"Close": "Close"})
-    return df if len(df) >= 20 else None
+def run_screening():
+    tickers = get_prime_tickers()
+    results = []
+    best_signals   = []
+    better_signals = []
 
+    print(f"Screening {len(tickers)} tickers...")
 
-def fetch_dividends(code: str, token: str) -> dict:
-    """J-Quantsから配当データを取得 → {year: 年間配当額}"""
-    end_d   = datetime.now().strftime("%Y%m%d")
-    start_d = (datetime.now() - timedelta(days=2 * 366)).strftime("%Y%m%d")
-
-    resp = requests.get(
-        "https://api.jquants.com/v1/fins/dividend",
-        headers={"Authorization": f"Bearer {token}"},
-        params={"code": code + "0", "from": start_d, "to": end_d},
-        timeout=30
-    )
-    if resp.status_code != 200:
-        return {}
-
-    data = resp.json().get("dividend", [])
-    if not data:
-        return {}
-
-    # 年ごとに配当合計
-    result = {}
-    for d in data:
-        try:
-            year = int(str(d.get("ReferenceDate", ""))[:4])
-            val  = float(d.get("DividendPayableDate", 0) or 0)
-            if val <= 0:
-                val = float(d.get("AnnualDividendPerShare", 0) or 0)
-            if year > 0 and val > 0:
-                result[year] = result.get(year, 0) + val
-        except Exception:
-            continue
-    return result
-
-
-def analyze_stock(code: str, name: str, token: str) -> dict | None:
-    hist = fetch_price_history(code, token)
-    if hist is None or "Close" not in hist.columns:
-        return None
-
-    current_price = float(hist["Close"].iloc[-1])
-    if current_price <= 0:
-        return None
-
-    div_data = fetch_dividends(code, token)
-    if not div_data:
-        return None
-
-    # 2年間の年次利回り計算
-    now_year = datetime.now(JST).year
-    annual_yields = []
-    for year in range(now_year - 2, now_year):
-        yr_div = div_data.get(year, 0)
-        if yr_div <= 0:
-            continue
-        yr_prices = hist[hist.index.year == year]["Close"]
-        if yr_prices.empty:
-            continue
-        avg_price = float(yr_prices.mean())
-        if avg_price > 0:
-            annual_yields.append(yr_div / avg_price)
-
-    if not annual_yields:
-        return None
-
-    max_yield = max(annual_yields)
-    avg_yield = sum(annual_yields) / len(annual_yields)
-
-    # 直近の年間配当
-    recent_div = div_data.get(now_year - 1) or div_data.get(now_year)
-    if not recent_div or recent_div <= 0:
-        return None
-
-    best_price   = recent_div / max_yield
-    better_price = recent_div / avg_yield
-
-    return {
-        "code":              code,
-        "name":              name,
-        "current_price":     round(current_price, 1),
-        "annual_div":        round(recent_div, 1),
-        "current_yield_pct": round(recent_div / current_price * 100, 2),
-        "max_yield_2y_pct":  round(max_yield * 100, 2),
-        "avg_yield_2y_pct":  round(avg_yield * 100, 2),
-        "best_price":        round(best_price, 1),
-        "better_price":      round(better_price, 1),
-        "vs_best_pct":       round((current_price / best_price - 1) * 100, 1),
-        "vs_better_pct":     round((current_price / better_price - 1) * 100, 1),
-    }
-
-
-def run_screening(codes_names: list, token: str):
-    best_stocks   = []
-    better_stocks = []
-    total = len(codes_names)
-
-    for i, (code, name) in enumerate(codes_names):
-        data = analyze_stock(code, name, token)
+    for i, ticker in enumerate(tickers):
+        print(f"  [{i+1}/{len(tickers)}] {ticker}")
+        data = fetch_stock_data(ticker)
         if data:
-            cp = data["current_price"]
-            if cp <= data["best_price"]:
-                best_stocks.append({**data, "level": "Best"})
-            elif cp <= data["better_price"]:
-                better_stocks.append({**data, "level": "Better"})
+            results.append(data)
+            if data["is_best"]:
+                best_signals.append(data)
+            elif data["is_better"]:
+                better_signals.append(data)
+        time.sleep(0.5)  # レート制限対策
 
-        if (i + 1) % 50 == 0:
-            print(f"  進捗: {i+1}/{total} | Best={len(best_stocks)} Better={len(better_stocks)}")
-        time.sleep(0.3)
+    # 結果をJSONに保存
+    output = {
+        "last_updated": datetime.now().isoformat(),
+        "total_screened": len(results),
+        "best_count": len(best_signals),
+        "better_count": len(better_signals),
+        "best_signals": sorted(best_signals,   key=lambda x: x["upside_to_best_pct"],   reverse=True),
+        "better_signals": sorted(better_signals, key=lambda x: x["upside_to_better_pct"], reverse=True),
+        "all_results": sorted(results, key=lambda x: x["current_yield_pct"], reverse=True),
+    }
 
-    return best_stocks, better_stocks
+    os.makedirs("results", exist_ok=True)
+    with open("results/latest.json", "w", encoding="utf-8") as f:
+        json.dump(output, f, ensure_ascii=False, indent=2)
+
+    print(f"Done. Best: {len(best_signals)}, Better: {len(better_signals)}")
+    return output
 
 
-def send_slack(best: list, better: list, webhook_url: str):
-    if not best and not better:
-        print("該当銘柄なし → Slack通知スキップ")
+def send_slack_notification(data):
+    """
+    Slack Incoming Webhookで通知を送信
+    """
+    if not SLACK_WEBHOOK_URL:
+        print("SLACK_WEBHOOK_URL not set, skipping notification.")
         return
 
-    now_str = datetime.now(JST).strftime("%Y/%m/%d %H:%M")
+    best   = data["best_signals"]
+    better = data["better_signals"]
 
-    def format_stocks(stocks, label, price_key, diff_key):
-        if not stocks:
-            return ""
-        lines = [f"*{label} ({len(stocks)}件)*"]
-        for s in stocks[:15]:
-            gap = s[diff_key]
-            lines.append(
-                f"• *{s['code']} {s['name']}*  "
-                f"株価 {s['current_price']}円  "
-                f"水準 {s[price_key]}円  "
-                f"({gap:+.1f}%)  "
-                f"利回り {s['current_yield_pct']}%"
+    if not best and not better:
+        # シグナルなしの場合は通知しない（静音モード）
+        print("No signals found, skipping Slack notification.")
+        return
+
+    now_str = datetime.now().strftime("%Y/%m/%d %H:%M")
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"📊 株価スクリーニング結果 {now_str}"}
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*スクリーニング対象:* {data['total_screened']}銘柄\n"
+                        f"*🟢 Best（最大利回り水準）:* {len(best)}銘柄\n"
+                        f"*🔵 Better（平均利回り水準）:* {len(better)}銘柄"
+            }
+        }
+    ]
+
+    if best:
+        best_lines = []
+        for s in best[:5]:  # 上位5件
+            best_lines.append(
+                f"• *{s['name']}* ({s['ticker']})\n"
+                f"  現在値: ¥{s['current_price']:,} | 買い水準: ¥{s['buy_price_best']:,} "
+                f"| 利回り: {s['current_yield_pct']}% | 上値余地: {abs(s['upside_to_best_pct'])}%↓"
             )
-        if len(stocks) > 15:
-            lines.append(f"  …他{len(stocks)-15}件（サイト参照）")
-        return "\n".join(lines)
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "🟢 *Best 買い水準銘柄*\n" + "\n".join(best_lines)}
+        })
 
-    text = "\n\n".join(filter(None, [
-        f":bar_chart: *配当スクリーニング結果* ({now_str} JST)",
-        format_stocks(best,   "🏆 Best買い水準",   "best_price",   "vs_best_pct"),
-        format_stocks(better, "✅ Better買い水準", "better_price", "vs_better_pct"),
-    ]))
+    if better:
+        better_lines = []
+        for s in better[:5]:  # 上位5件
+            better_lines.append(
+                f"• *{s['name']}* ({s['ticker']})\n"
+                f"  現在値: ¥{s['current_price']:,} | 買い水準: ¥{s['buy_price_better']:,} "
+                f"| 利回り: {s['current_yield_pct']}% | 上値余地: {abs(s['upside_to_better_pct'])}%↓"
+            )
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "🔵 *Better 買い水準銘柄*\n" + "\n".join(better_lines)}
+        })
 
-    resp = requests.post(webhook_url, json={"text": text}, timeout=10)
-    print(f"Slack送信 → HTTP {resp.status_code}")
+    # GitHub Pages URLがあれば追加
+    pages_url = os.environ.get("GITHUB_PAGES_URL", "")
+    if pages_url:
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"<{pages_url}|📋 詳細一覧を見る>"}
+        })
 
-
-def save_results(best: list, better: list):
-    os.makedirs("docs", exist_ok=True)
-    payload = {
-        "updated_at":    datetime.now(JST).isoformat(),
-        "best_stocks":   sorted(best,   key=lambda x: x["vs_best_pct"]),
-        "better_stocks": sorted(better, key=lambda x: x["vs_better_pct"]),
-    }
-    with open("docs/results.json", "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    print(f"保存完了 → Best={len(best)} Better={len(better)}")
-
-
-def main():
-    print("=" * 50)
-    print("配当利回りスクリーナー 起動")
-    print("=" * 50)
-
-    token = get_jquants_token()
-    codes_names = get_prime_market_stocks(token)
-    best, better = run_screening(codes_names, token)
-    save_results(best, better)
-
-    webhook = os.environ.get("SLACK_WEBHOOK_URL", "")
-    if webhook:
-        send_slack(best, better, webhook)
-    else:
-        print("SLACK_WEBHOOK_URL未設定 → 通知スキップ")
+    payload = {"blocks": blocks}
+    response = requests.post(SLACK_WEBHOOK_URL, json=payload)
+    print(f"Slack notification sent: {response.status_code}")
 
 
 if __name__ == "__main__":
-    main()
+    data = run_screening()
+    send_slack_notification(data)
