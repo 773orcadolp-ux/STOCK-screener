@@ -19,15 +19,19 @@ def get_jquants_token():
 
 def get_prime_market_stocks(token: str):
     """プライム市場の銘柄一覧をJ-Quantsから取得"""
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
     resp = requests.get(
         "https://api.jquants.com/v1/listed/info",
-        headers={"Authorization": f"Bearer {token}"},
+        headers=headers,
         timeout=30
     )
+    print(f"銘柄取得ステータス: {resp.status_code}")
+    print(f"レスポンス: {resp.text[:200]}")
     resp.raise_for_status()
     df = pd.DataFrame(resp.json()["info"])
-
-    # プライム市場のみ絞り込み（MarketCode=111）
     prime = df[df["MarketCode"] == "0111"].copy()
     codes_names = list(zip(
         prime["Code"].astype(str).str[:4].tolist(),
