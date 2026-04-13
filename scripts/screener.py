@@ -11,10 +11,19 @@ JST = pytz.timezone('Asia/Tokyo')
 
 
 def get_jquants_token():
-    """API Keyをそのまま使う"""
     api_key = os.environ["JQUANTS_REFRESH_TOKEN"]
-    print("J-Quants APIキー使用")
-    return api_key
+    
+    resp = requests.post(
+        "https://api.jquants.com/v1/token/auth_refresh",
+        json={"refreshToken": api_key},  # paramsではなくjsonで送る
+        timeout=30
+    )
+    print(f"認証ステータス: {resp.status_code}")
+    print(f"認証レスポンス: {resp.text[:200]}")
+    resp.raise_for_status()
+    id_token = resp.json()["idToken"]
+    print("J-Quants認証成功")
+    return id_token
 
 
 def get_prime_market_stocks(token: str):
