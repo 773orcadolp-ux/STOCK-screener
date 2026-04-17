@@ -3,196 +3,283 @@ import pandas as pd
 import json
 import os
 import requests
+import time
+import random
 from datetime import datetime
 
 # =====================
-# 設定
-# =====================
-SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
-GITHUB_PAGES_URL  = os.environ.get("GITHUB_PAGES_URL", "")
 
-TICKERS = [
-    "7203.T","6758.T","8306.T","9432.T","6902.T","8316.T","7974.T",
-    "4063.T","6861.T","8058.T","9433.T","4502.T","8031.T","6954.T",
-    "2914.T","8001.T","6501.T","6367.T","4661.T","7267.T"
+# 設定
+
+# =====================
+
+SLACK_WEBHOOK_URL = os.environ.get(“SLACK_WEBHOOK_URL”, “”)
+
+# yfinance用セッション（User-Agentを偽装してレート制限を回避）
+
+session = requests.Session()
+session.headers.update({
+“User-Agent”: (
+“Mozilla/5.0 (Windows NT 10.0; Win64; x64) “
+“AppleWebKit/537.36 (KHTML, like Gecko) “
+“Chrome/120.0.0.0 Safari/537.36”
+),
+“Accept”: “text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8”,
+“Accept-Language”: “ja,en-US;q=0.9,en;q=0.8”,
+})
+
+def get_prime_tickers():
+“”“プライム市場の主要銘柄リスト”””
+return [
+“7203.T”,  # トヨタ自動車
+“6758.T”,  # ソニーグループ
+“8306.T”,  # 三菱UFJフィナンシャル・グループ
+“9432.T”,  # 日本電信電話(NTT)
+“6902.T”,  # デンソー
+“8316.T”,  # 三井住友フィナンシャルグループ
+“7974.T”,  # 任天堂
+“4063.T”,  # 信越化学工業
+“6861.T”,  # キーエンス
+“8058.T”,  # 三菱商事
+“9433.T”,  # KDDI
+“4502.T”,  # 武田薬品工業
+“8031.T”,  # 三井物産
+“6954.T”,  # ファナック
+“2914.T”,  # 日本たばこ産業(JT)
+“8001.T”,  # 伊藤忠商事
+“6501.T”,  # 日立製作所
+“6367.T”,  # ダイキン工業
+“4661.T”,  # オリエンタルランド
+“7267.T”,  # 本田技研工業
 ]
 
-# =====================
-# データ取得（完全一括）
-# =====================
-def fetch_all_data():
-    print("=== データ一括取得中 ===")
+def safe_sleep(min_sec, max_sec):
+“”“ランダム待機（レート制限回避）”””
+wait = random.uniform(min_sec, max_sec)
+print(f”  待機: {wait:.1f}秒”)
+time.sleep(wait)
 
-    price_data = yf.download(
-        tickers=TICKERS,
-        period="5y",
-        interval="1d",
-        group_by="ticker",
-        auto_adjust=False,
-        threads=False
-    )
+def fetch_with_retry(ticker_symbol, max_retries=3):
+“””
+yfinanceでデータ取得。レート制限時は指数バックオフでリトライ。
+初回リクエスト前に長めの待機を入れることで制限を回避する。
+“””
+for attempt in range(max_retries):
+try:
+# リクエスト前に必ず待機（初回も含む）
+if attempt == 0:
+safe_sleep(5, 10)  # 初回: 5〜10秒
+else:
+wait = 20 + random.uniform(10, 20) * attempt
+print(f”  リトライ待機: {wait:.0f}秒 (試行 {attempt+1}/{max_retries})”)
+time.sleep(wait)
 
-    dividend_data = {}
-    for ticker in TICKERS:
-        try:
-            dividend_data[ticker] = yf.Ticker(ticker).dividends
-        except:
-            dividend_data[ticker] = pd.Series()
+```
+        ticker = yf.Ticker(ticker_symbol, session=session)
 
-    return price_data, dividend_data
+        # info取得（ここで429が出やすい）
+        info = ticker.info
 
-
-# =====================
-# スクリーニングロジック
-# =====================
-def analyze_ticker(ticker, price_data, dividends):
-    try:
-        if ticker not in price_data:
+        # 株価チェック
+        current_price = info.get("currentPrice") or info.get("regularMarketPrice")
+        if not current_price:
+            print(f"  {ticker_symbol}: 株価データなし → スキップ")
             return None
 
-        df = price_data[ticker].dropna()
-
-        if df.empty:
+        # 配当チェック
+        forward_div = info.get("dividendRate")
+        if not forward_div or forward_div == 0:
+            print(f"  {ticker_symbol}: 無配当 → スキップ")
             return None
 
-        current_price = df["Close"].iloc[-1]
+        # 配当履歴・株価履歴取得
+        safe_sleep(2, 4)  # historyリクエスト前にも待機
+        dividends = ticker.dividends
+        history   = ticker.history(period="5y")
 
-        if dividends.empty:
+        if history.empty or dividends.empty:
+            print(f"  {ticker_symbol}: 履歴データなし → スキップ")
             return None
 
-        dividends.index = dividends.index.tz_localize(None)
+        # タイムゾーン統一
+        if dividends.index.tzinfo:
+            dividends.index = dividends.index.tz_localize(None)
+        if history.index.tzinfo:
+            history.index = history.index.tz_localize(None)
 
-        # 年次配当
-        annual_divs = dividends.resample("Y").sum()
+        # 年次配当合計で利回りを算出
+        annual_divs = dividends.resample("YE").sum()
         annual_divs.index = annual_divs.index.year
 
         yearly_yields = []
-
         for year, annual_div in annual_divs.items():
             if annual_div == 0:
                 continue
-
-            year_prices = df[df.index.year == year]["Close"]
+            year_prices = history[history.index.year == year]["Close"]
             if year_prices.empty:
                 continue
-
             avg_price = year_prices.mean()
-
             if avg_price > 0:
-                yield_pct = (annual_div / avg_price) * 100
-                yearly_yields.append(yield_pct)
+                yearly_yields.append((annual_div / avg_price) * 100)
 
         if not yearly_yields:
+            print(f"  {ticker_symbol}: 利回り計算不可 → スキップ")
             return None
 
-        max_yield_5y = max(yearly_yields)
-        avg_yield_5y = sum(yearly_yields) / len(yearly_yields)
+        max_yield = max(yearly_yields)
+        avg_yield = sum(yearly_yields) / len(yearly_yields)
 
-        # 直近配当（実績ベース）
-        forward_dividend = dividends[-4:].sum()
-        if forward_dividend == 0:
+        if max_yield == 0 or avg_yield == 0:
             return None
 
-        buy_price_best   = round(forward_dividend / (max_yield_5y / 100), 1)
-        buy_price_better = round(forward_dividend / (avg_yield_5y / 100), 1)
-        current_yield    = round((forward_dividend / current_price) * 100, 2)
+        buy_best   = round(forward_div / (max_yield / 100), 1)
+        buy_better = round(forward_div / (avg_yield / 100), 1)
+        cur_yield  = round((forward_div / current_price) * 100, 2)
 
         return {
-            "ticker": ticker,
-            "current_price": float(current_price),
-            "forward_annual_dividend": float(forward_dividend),
-            "current_yield_pct": current_yield,
-            "max_yield_5y_pct": round(max_yield_5y, 2),
-            "avg_yield_5y_pct": round(avg_yield_5y, 2),
-            "buy_price_best": buy_price_best,
-            "buy_price_better": buy_price_better,
-            "is_best": bool(current_price <= buy_price_best),
-　　　　　　　　"is_better": bool(current_price <= buy_price_better),
-            "upside_to_best_pct": round((buy_price_best - current_price) / current_price * 100, 1),
-            "upside_to_better_pct": round((buy_price_better - current_price) / current_price * 100, 1),
+            "ticker":                  ticker_symbol,
+            "name":                    info.get("longName", ticker_symbol),
+            "current_price":           current_price,
+            "forward_annual_dividend": forward_div,
+            "current_yield_pct":       cur_yield,
+            "max_yield_5y_pct":        round(max_yield, 2),
+            "avg_yield_5y_pct":        round(avg_yield, 2),
+            "buy_price_best":          buy_best,
+            "buy_price_better":        buy_better,
+            "is_best":                 current_price <= buy_best,
+            "is_better":               current_price <= buy_better,
+            "upside_to_best_pct":      round((buy_best   - current_price) / current_price * 100, 1),
+            "upside_to_better_pct":    round((buy_better - current_price) / current_price * 100, 1),
         }
 
     except Exception as e:
-        print(f"{ticker}: エラー {e}")
-        return None
+        err = str(e)
+        if any(kw in err for kw in ["429", "Too Many Requests", "Rate limited"]):
+            if attempt < max_retries - 1:
+                wait = 30 + random.uniform(10, 20) * (attempt + 1)
+                print(f"  {ticker_symbol}: レート制限 → {wait:.0f}秒後にリトライ ({attempt+1}/{max_retries})")
+                time.sleep(wait)
+            else:
+                print(f"  {ticker_symbol}: リトライ上限到達 → スキップ")
+                return None
+        else:
+            print(f"  {ticker_symbol}: 予期しないエラー → {err[:80]}")
+            return None
 
+return None
+```
 
-# =====================
-# メイン処理
-# =====================
 def run_screening():
-    price_data, dividend_data = fetch_all_data()
+tickers        = get_prime_tickers()
+results        = []
+best_signals   = []
+better_signals = []
 
-    results = []
-    best_signals = []
-    better_signals = []
+```
+print(f"=== スクリーニング開始: {len(tickers)}銘柄 ===\n")
 
-    for ticker in TICKERS:
-        print(f"{ticker} 分析中...")
-        data = analyze_ticker(ticker, price_data, dividend_data[ticker])
+for i, ticker in enumerate(tickers):
+    print(f"[{i+1}/{len(tickers)}] {ticker} 処理中...")
+    data = fetch_with_retry(ticker)
 
-        if not data:
-            continue
-
+    if data:
         results.append(data)
-
         if data["is_best"]:
             best_signals.append(data)
+            print(f"  🟢 Best! 現在値¥{data['current_price']:,} / 買い水準¥{data['buy_price_best']:,} / 利回り{data['current_yield_pct']}%")
         elif data["is_better"]:
             better_signals.append(data)
+            print(f"  🔵 Better! 現在値¥{data['current_price']:,} / 買い水準¥{data['buy_price_better']:,} / 利回り{data['current_yield_pct']}%")
+        else:
+            print(f"  ✓ 取得OK (利回り{data['current_yield_pct']}% / 買い水準まで未達)")
+    else:
+        print(f"  ✗ データ取得失敗")
 
-    output = {
-        "last_updated": datetime.now().isoformat(),
-        "total_screened": len(results),
-        "best_count": len(best_signals),
-        "better_count": len(better_signals),
-        "best_signals": sorted(best_signals, key=lambda x: x["upside_to_best_pct"], reverse=True),
-        "better_signals": sorted(better_signals, key=lambda x: x["upside_to_better_pct"], reverse=True),
-        "all_results": sorted(results, key=lambda x: x["current_yield_pct"], reverse=True),
-    }
+    print()
 
-    os.makedirs("results", exist_ok=True)
+output = {
+    "last_updated":   datetime.now().isoformat(),
+    "total_screened": len(results),
+    "best_count":     len(best_signals),
+    "better_count":   len(better_signals),
+    "best_signals":   sorted(best_signals,   key=lambda x: x["upside_to_best_pct"],   reverse=True),
+    "better_signals": sorted(better_signals, key=lambda x: x["upside_to_better_pct"], reverse=True),
+    "all_results":    sorted(results,        key=lambda x: x["current_yield_pct"],     reverse=True),
+}
 
-    with open("results/latest.json", "w", encoding="utf-8") as f:
-        json.dump(output, f, ensure_ascii=False, indent=2)
+os.makedirs("results", exist_ok=True)
+with open("results/latest.json", "w", encoding="utf-8") as f:
+    json.dump(output, f, ensure_ascii=False, indent=2)
 
-    print("=== 完了 ===")
-    return output
+print(f"=== 完了: Best {len(best_signals)}銘柄 / Better {len(better_signals)}銘柄 / 取得成功 {len(results)}銘柄 ===")
+return output
+```
 
-
-# =====================
-# Slack通知
-# =====================
 def send_slack_notification(data):
-    if not SLACK_WEBHOOK_URL:
-        return
+if not SLACK_WEBHOOK_URL:
+print(“SLACK_WEBHOOK_URL未設定 → 通知スキップ”)
+return
 
-    best = data["best_signals"]
-    better = data["better_signals"]
+```
+best   = data["best_signals"]
+better = data["better_signals"]
 
-    if not best and not better:
-        return
+if not best and not better:
+    print("シグナルなし → Slack通知スキップ")
+    return
 
-    now_str = datetime.now().strftime("%Y/%m/%d %H:%M")
+now_str = datetime.now().strftime("%Y/%m/%d %H:%M")
+blocks  = [
+    {
+        "type": "header",
+        "text": {"type": "plain_text", "text": f"📊 株価スクリーニング結果 {now_str}"}
+    },
+    {
+        "type": "section",
+        "text": {
+            "type": "mrkdwn",
+            "text": (
+                f"*スクリーニング対象:* {data['total_screened']}銘柄\n"
+                f"*🟢 Best（最大利回り水準）:* {len(best)}銘柄\n"
+                f"*🔵 Better（平均利回り水準）:* {len(better)}銘柄"
+            )
+        }
+    }
+]
 
-    text = f"📊 スクリーニング結果 {now_str}\n"
-    text += f"Best: {len(best)} / Better: {len(better)}\n\n"
+if best:
+    lines = [
+        f"• *{s['name']}* ({s['ticker']})\n"
+        f"  現在値: ¥{s['current_price']:,} | 買い水準: ¥{s['buy_price_best']:,} | 利回り: {s['current_yield_pct']}%"
+        for s in best[:5]
+    ]
+    blocks.append({
+        "type": "section",
+        "text": {"type": "mrkdwn", "text": "🟢 *Best 買い水準銘柄*\n" + "\n".join(lines)}
+    })
 
-    for s in best[:5]:
-        text += f"🟢 {s['ticker']} ¥{s['current_price']:,} → ¥{s['buy_price_best']:,}\n"
+if better:
+    lines = [
+        f"• *{s['name']}* ({s['ticker']})\n"
+        f"  現在値: ¥{s['current_price']:,} | 買い水準: ¥{s['buy_price_better']:,} | 利回り: {s['current_yield_pct']}%"
+        for s in better[:5]
+    ]
+    blocks.append({
+        "type": "section",
+        "text": {"type": "mrkdwn", "text": "🔵 *Better 買い水準銘柄*\n" + "\n".join(lines)}
+    })
 
-    for s in better[:5]:
-        text += f"🔵 {s['ticker']} ¥{s['current_price']:,} → ¥{s['buy_price_better']:,}\n"
+pages_url = os.environ.get("GITHUB_PAGES_URL", "")
+if pages_url:
+    blocks.append({
+        "type": "section",
+        "text": {"type": "mrkdwn", "text": f"<{pages_url}|📋 詳細一覧を見る>"}
+    })
 
-    if GITHUB_PAGES_URL:
-        text += f"\n詳細: {GITHUB_PAGES_URL}"
+resp = requests.post(SLACK_WEBHOOK_URL, json={"blocks": blocks})
+print(f"Slack通知: ステータス {resp.status_code}")
+```
 
-    requests.post(SLACK_WEBHOOK_URL, json={"text": text})
-
-
-# =====================
-# 実行
-# =====================
-if __name__ == "__main__":
-    data = run_screening()
-    send_slack_notification(data)
+if **name** == “**main**”:
+result = run_screening()
+send_slack_notification(result)
