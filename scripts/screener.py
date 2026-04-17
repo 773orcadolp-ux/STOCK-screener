@@ -137,19 +137,18 @@ def fetch_with_retry(ticker_symbol, max_retries=3):
             return {
                 "ticker":                  ticker_symbol,
                 "name":                    info.get("longName", ticker_symbol),
-                "current_price":           float(current_price),
-                "forward_annual_dividend": float(forward_div),
-                "current_yield_pct":       float(cur_yield),
-                "max_yield_5y_pct":        float(round(max_yield, 2)),
-                "avg_yield_5y_pct":        float(round(avg_yield, 2)),
-                "buy_price_best":          float(buy_best),
-                "buy_price_better":        float(buy_better),
-                "is_best":                 bool(current_price <= buy_best),
-                "is_better":               bool(current_price <= buy_better),
-                "upside_to_best_pct":      float(round((buy_best   - current_price) / current_price * 100, 1)),
-                "upside_to_better_pct":    float(round((buy_better - current_price) / current_price * 100, 1)),
+                "current_price":           current_price,
+                "forward_annual_dividend": forward_div,
+                "current_yield_pct":       cur_yield,
+                "max_yield_5y_pct":        round(max_yield, 2),
+                "avg_yield_5y_pct":        round(avg_yield, 2),
+                "buy_price_best":          buy_best,
+                "buy_price_better":        buy_better,
+                "is_best":                 current_price <= buy_best,
+                "is_better":               current_price <= buy_better,
+                "upside_to_best_pct":      round((buy_best   - current_price) / current_price * 100, 1),
+                "upside_to_better_pct":    round((buy_better - current_price) / current_price * 100, 1),
             }
-
 
         except Exception as e:
             err = str(e)
