@@ -32,8 +32,6 @@ jobs:
           JQUANTS_PASSWORD: ${{ secrets.JQUANTS_PASSWORD }}
         run: python scripts/screener.py                # ← scripts/ に合わせた
 
-      - name: Generate HTML report
-        run: python scripts/generate_html.py           # ← 後で追加するファイル
 
       - name: Commit and push results
         run: |
