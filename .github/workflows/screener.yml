@@ -28,7 +28,8 @@ jobs:
       - name: Run screener
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          GITHUB_PAGES_URL: ${{ secrets.GITHUB_PAGES_URL }}
+          JQUANTS_EMAIL: ${{ secrets.JQUANTS_EMAIL }}
+          JQUANTS_PASSWORD: ${{ secrets.JQUANTS_PASSWORD }}
         run: python scripts/screener.py                # ← scripts/ に合わせた
 
       - name: Generate HTML report
