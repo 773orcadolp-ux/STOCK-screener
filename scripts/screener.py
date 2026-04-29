@@ -11,16 +11,16 @@ JST = pytz.timezone('Asia/Tokyo')
 
 
 def get_jquants_token():
+    import json
     email    = os.environ["JQUANTS_EMAIL"]
     password = os.environ["JQUANTS_PASSWORD"]
     
-    # デバッグ：文字数と前後の文字を確認
-    print(f"メアド文字数: {len(email)}")
-    print(f"メアド内容: '{email}'")  # 全部表示して確認
+    mail_password = {"mailaddress": email, "password": password}
     
+    # 参考記事と同じ形式: data=json.dumps(...)
     resp = requests.post(
         "https://api.jquants.com/v1/token/auth_user",
-        json={"mailaddress": email, "password": password},
+        data=json.dumps(mail_password),
         timeout=30
     )
     print(f"認証ステータス: {resp.status_code}")
@@ -29,8 +29,7 @@ def get_jquants_token():
     refresh_token = resp.json()["refreshToken"]
 
     resp2 = requests.post(
-        "https://api.jquants.com/v1/token/auth_refresh",
-        params={"refreshtoken": refresh_token},
+        f"https://api.jquants.com/v1/token/auth_refresh?refreshtoken={refresh_token}",
         timeout=30
     )
     resp2.raise_for_status()
