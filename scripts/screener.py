@@ -264,8 +264,8 @@ def main():
     print("=== デバッグ終了 ===\n")
     # ─────────────────────────
     
-    best, better = run_screening(codes_names, headers)
-    save_results(best, better)
+    # best, better = run_screening(codes_names, headers)
+    # save_results(best, better)
 
     webhook = os.environ.get("SLACK_WEBHOOK_URL", "")
     if webhook:
