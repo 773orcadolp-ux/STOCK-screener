@@ -242,6 +242,22 @@ def main():
 
     headers = get_headers()
     codes_names = get_prime_market_stocks(headers)
+    
+        # ─── デバッグ: トヨタ1銘柄でテスト ───
+    print("\n=== デバッグ: トヨタ(72030)テスト ===")
+    test_hist = fetch_price_history("72030", headers)
+    if test_hist is not None:
+        print(f"株価データ件数: {len(test_hist)}")
+        print(f"カラム: {test_hist.columns.tolist()}")
+        print(f"最新株価: {test_hist['Close'].iloc[-1]}")
+    else:
+        print("株価データ取得失敗")
+    
+    test_div = fetch_dividends("72030", headers)
+    print(f"配当データ: {test_div}")
+    print("=== デバッグ終了 ===\n")
+    # ─────────────────────────
+
     best, better = run_screening(codes_names, headers)
     save_results(best, better)
 
