@@ -13,7 +13,6 @@ def get_headers():
     api_key = os.environ["JQUANTS_API_KEY"]
     return {"x-api-key": api_key}
 
-
 def get_prime_market_stocks(headers):
     """V2: プライム市場の銘柄一覧を取得"""
     resp = requests.get(
@@ -22,36 +21,19 @@ def get_prime_market_stocks(headers):
         timeout=30
     )
     print(f"銘柄取得ステータス: {resp.status_code}")
-    print(f"レスポンス先頭: {resp.text[:300]}")
     resp.raise_for_status()
     
     data = resp.json()
-    # V2のレスポンス構造を確認
-    if "info" in data:
-        df = pd.DataFrame(data["info"])
-    elif "master" in data:
-        df = pd.DataFrame(data["master"])
-    else:
-        print(f"データ構造: {list(data.keys())}")
-        df = pd.DataFrame(data[list(data.keys())[0]])
+    df = pd.DataFrame(data["data"])
     
     print(f"取得銘柄数: {len(df)}")
-    print(f"カラム: {df.columns.tolist()}")
     
-    # プライム市場の絞り込み
-    if "MarketCode" in df.columns:
-        prime = df[df["MarketCode"] == "0111"].copy()
-    elif "MarketCodeName" in df.columns:
-        prime = df[df["MarketCodeName"].str.contains("プライム", na=False)].copy()
-    else:
-        prime = df.copy()
-    
-    code_col = "Code" if "Code" in prime.columns else "LocalCode"
-    name_col = "CompanyName" if "CompanyName" in prime.columns else "CompanyNameJp"
+    # プライム市場のみ絞り込み（Mkt=0111）
+    prime = df[df["Mkt"] == "0111"].copy()
     
     codes_names = list(zip(
-        prime[code_col].astype(str).tolist(),
-        prime[name_col].tolist()
+        prime["Code"].astype(str).tolist(),
+        prime["CoName"].tolist()
     ))
     print(f"プライム市場銘柄数: {len(codes_names)}")
     return codes_names
