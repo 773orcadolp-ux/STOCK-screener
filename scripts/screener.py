@@ -38,13 +38,11 @@ def get_prime_market_stocks(headers):
     print(f"プライム市場銘柄数: {len(codes_names)}")
     return codes_names
 
-
 def fetch_price_history(code: str, headers):
     """V2: 株価四本値取得"""
-    end_d   = datetime.now().strftime("%Y%m%d")
-    start_d = (datetime.now() - timedelta(days=2 * 366)).strftime("%Y%m%d")
+    end_d   = datetime.now().strftime("%Y-%m-%d")
+    start_d = (datetime.now() - timedelta(days=2 * 366)).strftime("%Y-%m-%d")
     
-    # V2は5桁コード必要（4桁の場合は末尾に0追加）
     code5 = code if len(code) == 5 else code + "0"
 
     resp = requests.get(
@@ -57,8 +55,7 @@ def fetch_price_history(code: str, headers):
         return None
 
     data = resp.json()
-    key = "daily_quotes" if "daily_quotes" in data else list(data.keys())[0]
-    items = data.get(key, [])
+    items = data.get("data", [])
     if not items:
         return None
 
@@ -68,16 +65,17 @@ def fetch_price_history(code: str, headers):
     df["Date"] = pd.to_datetime(df["Date"])
     df = df.sort_values("Date").set_index("Date")
     
-    # Closeカラムの確認
-    close_col = None
-    for c in ["Close", "AdjustmentClose", "AdjC"]:
-        if c in df.columns:
-            close_col = c
-            break
-    if close_col is None:
+    # V2のカラム: C=終値, AdjC=調整済み終値
+    if "AdjC" in df.columns:
+        df["Close"] = df["AdjC"]
+    elif "C" in df.columns:
+        df["Close"] = df["C"]
+    else:
         return None
-    df["Close"] = df[close_col]
+    
+    df = df.dropna(subset=["Close"])
     return df if len(df) >= 20 else None
+
 
 
 def fetch_dividends(code: str, headers) -> dict:
@@ -94,21 +92,29 @@ def fetch_dividends(code: str, headers) -> dict:
         return {}
 
     data = resp.json()
-    key = "dividend" if "dividend" in data else list(data.keys())[0]
-    items = data.get(key, [])
+    items = data.get("data", [])
     if not items:
         return {}
 
     result = {}
     for d in items:
         try:
-            date_str = d.get("ReferenceDate") or d.get("AnnouncementDate") or ""
+            date_str = d.get("AnnouncementDate") or d.get("ReferenceDate") or ""
             year = int(str(date_str)[:4])
-            val = float(d.get("AnnualDividendPerShare", 0) or 0)
-            if val <= 0:
-                val = float(d.get("DividendPerShare", 0) or 0)
+            
+            # 配当額のキー候補
+            val = 0
+            for key in ["AnnualDividendPerShare", "DividendPerShare", "CommemorativeDividendRate", "SpecialDividendRate"]:
+                v = d.get(key)
+                if v and v != "-":
+                    try:
+                        val = float(v)
+                        break
+                    except:
+                        continue
+            
             if year > 0 and val > 0:
-                result[year] = val
+                result[year] = result.get(year, 0) + val
         except Exception:
             continue
     return result
@@ -243,7 +249,7 @@ def main():
     headers = get_headers()
     codes_names = get_prime_market_stocks(headers)
     
-        # ─── デバッグ: トヨタ1銘柄でテスト ───
+    # ─── デバッグ: トヨタ1銘柄でテスト ───
     print("\n=== デバッグ: トヨタ(72030)テスト ===")
     test_hist = fetch_price_history("72030", headers)
     if test_hist is not None:
@@ -257,9 +263,9 @@ def main():
     print(f"配当データ: {test_div}")
     print("=== デバッグ終了 ===\n")
     # ─────────────────────────
-
-    # best, better = run_screening(codes_names, headers)
-    # save_results(best, better)
+    
+    best, better = run_screening(codes_names, headers)
+    save_results(best, better)
 
     webhook = os.environ.get("SLACK_WEBHOOK_URL", "")
     if webhook:
