@@ -2,7 +2,6 @@ import pandas as pd
 import requests
 import json
 import os
-import io
 import time
 from datetime import datetime, timedelta
 import pytz
@@ -10,97 +9,122 @@ import pytz
 JST = pytz.timezone('Asia/Tokyo')
 
 
-def get_jquants_token():
-    import json
-    email    = os.environ["JQUANTS_EMAIL"]
-    password = os.environ["JQUANTS_PASSWORD"]
-    
-    mail_password = {"mailaddress": email, "password": password}
-    
-    # 参考記事と同じ形式: data=json.dumps(...)
-    resp = requests.post(
-        "https://api.jquants.com/v1/token/auth_user",
-        data=json.dumps(mail_password),
-        timeout=30
-    )
-    print(f"認証ステータス: {resp.status_code}")
-    print(f"認証レスポンス: {resp.text[:300]}")
-    resp.raise_for_status()
-    refresh_token = resp.json()["refreshToken"]
-
-    resp2 = requests.post(
-        f"https://api.jquants.com/v1/token/auth_refresh?refreshtoken={refresh_token}",
-        timeout=30
-    )
-    resp2.raise_for_status()
-    print("J-Quants認証成功")
-    return resp2.json()["idToken"]
+def get_headers():
+    api_key = os.environ["JQUANTS_API_KEY"]
+    return {"x-api-key": api_key}
 
 
-
-def get_prime_market_stocks(token: str):
+def get_prime_market_stocks(headers):
+    """V2: プライム市場の銘柄一覧を取得"""
     resp = requests.get(
-        "https://api.jquants.com/v1/listed/info",
-        headers={"Authorization": f"Bearer {token}"},
+        "https://api.jquants.com/v2/equities/master",
+        headers=headers,
         timeout=30
     )
     print(f"銘柄取得ステータス: {resp.status_code}")
+    print(f"レスポンス先頭: {resp.text[:300]}")
     resp.raise_for_status()
-    df = pd.DataFrame(resp.json()["info"])
-    prime = df[df["MarketCode"] == "0111"].copy()
+    
+    data = resp.json()
+    # V2のレスポンス構造を確認
+    if "info" in data:
+        df = pd.DataFrame(data["info"])
+    elif "master" in data:
+        df = pd.DataFrame(data["master"])
+    else:
+        print(f"データ構造: {list(data.keys())}")
+        df = pd.DataFrame(data[list(data.keys())[0]])
+    
+    print(f"取得銘柄数: {len(df)}")
+    print(f"カラム: {df.columns.tolist()}")
+    
+    # プライム市場の絞り込み
+    if "MarketCode" in df.columns:
+        prime = df[df["MarketCode"] == "0111"].copy()
+    elif "MarketCodeName" in df.columns:
+        prime = df[df["MarketCodeName"].str.contains("プライム", na=False)].copy()
+    else:
+        prime = df.copy()
+    
+    code_col = "Code" if "Code" in prime.columns else "LocalCode"
+    name_col = "CompanyName" if "CompanyName" in prime.columns else "CompanyNameJp"
+    
     codes_names = list(zip(
-        prime["Code"].astype(str).str[:4].tolist(),
-        prime["CompanyName"].tolist()
+        prime[code_col].astype(str).tolist(),
+        prime[name_col].tolist()
     ))
     print(f"プライム市場銘柄数: {len(codes_names)}")
     return codes_names
 
 
-def fetch_price_history(code: str, token: str):
+def fetch_price_history(code: str, headers):
+    """V2: 株価四本値取得"""
     end_d   = datetime.now().strftime("%Y%m%d")
     start_d = (datetime.now() - timedelta(days=2 * 366)).strftime("%Y%m%d")
+    
+    # V2は5桁コード必要（4桁の場合は末尾に0追加）
+    code5 = code if len(code) == 5 else code + "0"
 
     resp = requests.get(
-        "https://api.jquants.com/v1/prices/daily_quotes",
-        headers={"Authorization": f"Bearer {token}"},
-        params={"code": code + "0", "from": start_d, "to": end_d},
+        "https://api.jquants.com/v2/equities/bars/daily",
+        headers=headers,
+        params={"code": code5, "from": start_d, "to": end_d},
         timeout=30
     )
     if resp.status_code != 200:
         return None
 
-    data = resp.json().get("daily_quotes", [])
-    if not data:
+    data = resp.json()
+    key = "daily_quotes" if "daily_quotes" in data else list(data.keys())[0]
+    items = data.get(key, [])
+    if not items:
         return None
 
-    df = pd.DataFrame(data)
+    df = pd.DataFrame(items)
+    if "Date" not in df.columns:
+        return None
     df["Date"] = pd.to_datetime(df["Date"])
     df = df.sort_values("Date").set_index("Date")
+    
+    # Closeカラムの確認
+    close_col = None
+    for c in ["Close", "AdjustmentClose", "AdjC"]:
+        if c in df.columns:
+            close_col = c
+            break
+    if close_col is None:
+        return None
+    df["Close"] = df[close_col]
     return df if len(df) >= 20 else None
 
 
-def fetch_dividends(code: str, token: str) -> dict:
-    end_d   = datetime.now().strftime("%Y%m%d")
-    start_d = (datetime.now() - timedelta(days=2 * 366)).strftime("%Y%m%d")
+def fetch_dividends(code: str, headers) -> dict:
+    """V2: 配当金情報取得"""
+    code5 = code if len(code) == 5 else code + "0"
 
     resp = requests.get(
-        "https://api.jquants.com/v1/fins/dividend",
-        headers={"Authorization": f"Bearer {token}"},
-        params={"code": code + "0", "from": start_d, "to": end_d},
+        "https://api.jquants.com/v2/fins/dividend",
+        headers=headers,
+        params={"code": code5},
         timeout=30
     )
     if resp.status_code != 200:
         return {}
 
-    data = resp.json().get("dividend", [])
-    if not data:
+    data = resp.json()
+    key = "dividend" if "dividend" in data else list(data.keys())[0]
+    items = data.get(key, [])
+    if not items:
         return {}
 
     result = {}
-    for d in data:
+    for d in items:
         try:
-            year = int(str(d.get("ReferenceDate", ""))[:4])
-            val  = float(d.get("AnnualDividendPerShare", 0) or 0)
+            date_str = d.get("ReferenceDate") or d.get("AnnouncementDate") or ""
+            year = int(str(date_str)[:4])
+            val = float(d.get("AnnualDividendPerShare", 0) or 0)
+            if val <= 0:
+                val = float(d.get("DividendPerShare", 0) or 0)
             if year > 0 and val > 0:
                 result[year] = val
         except Exception:
@@ -108,16 +132,16 @@ def fetch_dividends(code: str, token: str) -> dict:
     return result
 
 
-def analyze_stock(code: str, name: str, token: str):
-    hist = fetch_price_history(code, token)
-    if hist is None or "Close" not in hist.columns:
+def analyze_stock(code: str, name: str, headers):
+    hist = fetch_price_history(code, headers)
+    if hist is None:
         return None
 
     current_price = float(hist["Close"].iloc[-1])
     if current_price <= 0:
         return None
 
-    div_data = fetch_dividends(code, token)
+    div_data = fetch_dividends(code, headers)
     if not div_data:
         return None
 
@@ -148,7 +172,7 @@ def analyze_stock(code: str, name: str, token: str):
     better_price = recent_div / avg_yield
 
     return {
-        "code":              code,
+        "code":              code[:4],
         "name":              name,
         "current_price":     round(current_price, 1),
         "annual_div":        round(recent_div, 1),
@@ -162,13 +186,13 @@ def analyze_stock(code: str, name: str, token: str):
     }
 
 
-def run_screening(codes_names: list, token: str):
+def run_screening(codes_names: list, headers):
     best_stocks   = []
     better_stocks = []
     total = len(codes_names)
 
     for i, (code, name) in enumerate(codes_names):
-        data = analyze_stock(code, name, token)
+        data = analyze_stock(code, name, headers)
         if data:
             cp = data["current_price"]
             if cp <= data["best_price"]:
@@ -231,12 +255,12 @@ def save_results(best: list, better: list):
 
 def main():
     print("=" * 50)
-    print("配当利回りスクリーナー 起動")
+    print("配当利回りスクリーナー V2 起動")
     print("=" * 50)
 
-    token = get_jquants_token()
-    codes_names = get_prime_market_stocks(token)
-    best, better = run_screening(codes_names, token)
+    headers = get_headers()
+    codes_names = get_prime_market_stocks(headers)
+    best, better = run_screening(codes_names, headers)
     save_results(best, better)
 
     webhook = os.environ.get("SLACK_WEBHOOK_URL", "")
