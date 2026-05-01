@@ -2,16 +2,16 @@ name: Stock Screener
 
 on:
   schedule:
-    - cron: '0 0 * * 1-5'   # JST 09:00
-    - cron: '0 3 * * 1-5'   # JST 12:00
-    - cron: '0 6 * * 1-5'   # JST 15:00
+    - cron: "0 9 * * 1-5"     # UTC 9時 = JST 18時（月-金）
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   screen:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    timeout-minutes: 180
 
     steps:
       - name: Checkout
@@ -23,14 +23,13 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install -r scripts/requirements.txt   # ← scripts/ に合わせた
+        run: pip install -r scripts/requirements.txt
 
       - name: Run screener
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
-        run: python scripts/screener.py                # ← scripts/ に合わせた
-
+        run: python scripts/screener.py
 
       - name: Commit and push results
         run: |
