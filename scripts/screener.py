@@ -9,7 +9,7 @@ import pytz
 JST = pytz.timezone('Asia/Tokyo')
 
 # ─── テストモード設定 ───
-TEST_MODE = True  # True=トヨタのみ / False=日経225全銘柄
+TEST_MODE = False  # True=トヨタのみ / False=日経225全銘柄
 TEST_CODE5 = "72030"
 TEST_NAME = "トヨタ自動車"
 
