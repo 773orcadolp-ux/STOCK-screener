@@ -9,7 +9,7 @@ import pytz
 JST = pytz.timezone('Asia/Tokyo')
 
 # ─── テストモード設定 ───
-TEST_MODE = False  # True=トヨタのみ / False=日経225全銘柄
+TEST_MODE = True  # True=トヨタのみ / False=日経225全銘柄
 TEST_CODE5 = "72030"
 TEST_NAME = "トヨタ自動車"
 
@@ -75,7 +75,6 @@ def get_target_stocks(headers):
     if TEST_MODE:
         return [{"Code": TEST_CODE5, "Code4": TEST_CODE5[:4], "CoName": TEST_NAME}]
     
-    # マスターから日経225銘柄をフィルタリング
     items = fetch_with_pagination(
         "https://api.jquants.com/v2/equities/master",
         headers, {}, key="data"
@@ -103,7 +102,7 @@ def fetch_prices_by_date(date_str: str, headers):
     df = df.dropna(subset=["AdjC"])
     df = df[df["AdjC"] > 0]
     df["Code4"] = df["Code"].astype(str).str[:4]
-    df = df.drop_duplicates(subset=["Code4"], keep="first")  # 重複除去
+    df = df.drop_duplicates(subset=["Code4"], keep="first")
     return df.set_index("Code4")["AdjC"]
 
 
@@ -132,7 +131,7 @@ def get_price_samples(headers, num_months: int = 24):
         if prices is not None and len(prices) > 0:
             samples[date_str] = prices
             print(f"  [{i+1}/{num_months}] {date_str}: {len(prices)}銘柄")
-        time.sleep(13)  # 無料プラン: 5回/分 → 12秒間隔以上
+        time.sleep(13)
     
     return samples
 
@@ -212,6 +211,19 @@ def extract_dividend_history(fin_items: list, current_year: int) -> dict:
     return {"annual": annual, "forecast": forecast}
 
 
+def send_slack(webhook, text):
+    """Slack通知（エラーログ付き）"""
+    try:
+        resp = requests.post(webhook, json={"text": text}, timeout=10)
+        print(f"Slack通知 status: {resp.status_code}, len={len(text)}")
+        if resp.status_code != 200:
+            print(f"Slack エラー詳細: {resp.text[:300]}")
+        return resp.status_code == 200
+    except Exception as e:
+        print(f"Slack送信失敗: {e}")
+        return False
+
+
 def main():
     print("=" * 50)
     print(f"配当利回りスクリーナー V2 起動 (TEST={TEST_MODE})")
@@ -262,9 +274,8 @@ def main():
                 print(f"  [{name}] 現在株価データなし → スキップ")
             continue
         
-        # 重複対策：Series返却を防ぐ
         cp_val = current_prices[code4]
-        if hasattr(cp_val, 'iloc'):  # Seriesの場合
+        if hasattr(cp_val, 'iloc'):
             cp_val = cp_val.iloc[0]
         cp = float(cp_val)
         
@@ -326,13 +337,14 @@ def main():
         
         best_p = recent_div / max_y
         better_p = recent_div / avg_y
+        current_yield = recent_div / cp
         
         result = {
             "code": code4,
             "name": name,
             "current_price": round(cp, 1),
             "annual_div": round(recent_div, 1),
-            "current_yield_pct": round(recent_div / cp * 100, 2),
+            "current_yield_pct": round(current_yield * 100, 2),
             "max_yield_pct": round(max_y * 100, 2),
             "avg_yield_pct": round(avg_y * 100, 2),
             "best_price": round(best_p, 1),
@@ -350,16 +362,20 @@ def main():
             print(f"  平均利回り(2年): {result['avg_yield_pct']}%")
             print(f"  Best水準: {result['best_price']}円 (現在比{result['vs_best_pct']:+.1f}%)")
             print(f"  Better水準: {result['better_price']}円 (現在比{result['vs_better_pct']:+.1f}%)")
+            if current_yield >= max_y:
+                print(f"  → 除外: 現在利回り({current_yield*100:.2f}%) ≥ 過去最大利回り({max_y*100:.2f}%)")
             print(f"  ━━━━━━━━━━━━━━━━━━━━━━")
         
-        if cp <= best_p:
-            best_stocks.append({**result, "level": "Best"})
-        elif cp <= better_p:
-            better_stocks.append({**result, "level": "Better"})
+        # 【修正】現在利回りが過去最大利回りを超えていない銘柄のみ対象
+        if current_yield < max_y:
+            if cp <= best_p:
+                best_stocks.append({**result, "level": "Best"})
+            elif cp <= better_p:
+                better_stocks.append({**result, "level": "Better"})
         
         if not TEST_MODE and (i + 1) % 25 == 0:
             print(f"  進捗: {i+1}/{len(stocks)} | Best={len(best_stocks)} Better={len(better_stocks)}")
-        time.sleep(13)  # 無料プラン用
+        time.sleep(13)
     
     print(f"\n完了: Best={len(best_stocks)} Better={len(better_stocks)}")
     
@@ -374,27 +390,66 @@ def main():
         json.dump(payload, f, ensure_ascii=False, indent=2)
     print("結果保存完了")
     
-    # 7. Slack通知
+    # 7. Slack通知（エラー検知＋メッセージ分割対応）
     webhook = os.environ.get("SLACK_WEBHOOK_URL", "")
-    if webhook:
-        if TEST_MODE:
-            now_str = datetime.now(JST).strftime("%Y/%m/%d %H:%M")
-            text = f":test_tube: *テスト実行完了* ({now_str} JST)\n対象: {TEST_NAME}\nBest該当: {len(best_stocks)}件 / Better該当: {len(better_stocks)}件"
-            requests.post(webhook, json={"text": text}, timeout=10)
-            print("テスト結果Slack通知送信")
-        elif best_stocks or better_stocks:
-            now_str = datetime.now(JST).strftime("%Y/%m/%d %H:%M")
-            lines = [f":bar_chart: *配当スクリーニング結果* ({now_str} JST)"]
-            if best_stocks:
-                lines.append(f"\n*🏆 Best ({len(best_stocks)}件)*")
-                for s in best_stocks[:10]:
-                    lines.append(f"• {s['code']} {s['name']} 現在{s['current_price']}円 / 水準{s['best_price']}円 利回り{s['current_yield_pct']}%")
-            if better_stocks:
-                lines.append(f"\n*✅ Better ({len(better_stocks)}件)*")
-                for s in better_stocks[:10]:
-                    lines.append(f"• {s['code']} {s['name']} 現在{s['current_price']}円 / 水準{s['better_price']}円 利回り{s['current_yield_pct']}%")
-            requests.post(webhook, json={"text": "\n".join(lines)}, timeout=10)
-            print("Slack通知送信")
+    if not webhook:
+        print("Slack Webhook未設定")
+        return
+    
+    now_str = datetime.now(JST).strftime("%Y/%m/%d %H:%M")
+    
+    if TEST_MODE:
+        text = (
+            f":test_tube: *テスト実行完了* ({now_str} JST)\n"
+            f"対象: {TEST_NAME}\n"
+            f"Best該当: {len(best_stocks)}件 / Better該当: {len(better_stocks)}件"
+        )
+        send_slack(webhook, text)
+        return
+    
+    # 本番モード: 該当なしでも通知
+    if not best_stocks and not better_stocks:
+        text = f":mag: *配当スクリーニング完了* ({now_str} JST)\n本日は該当銘柄なし"
+        send_slack(webhook, text)
+        return
+    
+    # ヘッダー
+    header = (
+        f":bar_chart: *配当スクリーニング結果* ({now_str} JST)\n"
+        f"Best: {len(best_stocks)}件 / Better: {len(better_stocks)}件"
+    )
+    send_slack(webhook, header)
+    time.sleep(1)
+    
+    # Best銘柄（10件ずつ分割）
+    if best_stocks:
+        for chunk_start in range(0, len(best_stocks), 10):
+            chunk = best_stocks[chunk_start:chunk_start + 10]
+            lines = [f"*🏆 Best ({chunk_start+1}〜{chunk_start+len(chunk)}件目)*"]
+            for s in chunk:
+                lines.append(
+                    f"• {s['code']} {s['name']} "
+                    f"現在{s['current_price']}円 / 水準{s['best_price']}円 "
+                    f"利回り{s['current_yield_pct']}%"
+                )
+            send_slack(webhook, "\n".join(lines))
+            time.sleep(1)
+    
+    # Better銘柄（10件ずつ分割）
+    if better_stocks:
+        for chunk_start in range(0, len(better_stocks), 10):
+            chunk = better_stocks[chunk_start:chunk_start + 10]
+            lines = [f"*✅ Better ({chunk_start+1}〜{chunk_start+len(chunk)}件目)*"]
+            for s in chunk:
+                lines.append(
+                    f"• {s['code']} {s['name']} "
+                    f"現在{s['current_price']}円 / 水準{s['better_price']}円 "
+                    f"利回り{s['current_yield_pct']}%"
+                )
+            send_slack(webhook, "\n".join(lines))
+            time.sleep(1)
+    
+    print("Slack通知完了")
 
 
 if __name__ == "__main__":
