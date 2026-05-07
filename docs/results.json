@@ -1,7 +1,21 @@
 {
-  "updated_at": "2026-05-06T21:38:31.742366+09:00",
+  "updated_at": "2026-05-07T21:35:52.917173+09:00",
   "best_stocks": [],
   "better_stocks": [
+    {
+      "code": "3659",
+      "name": "ネクソン",
+      "current_price": 3735.0,
+      "annual_div": 60.0,
+      "current_yield_pct": 1.61,
+      "max_yield_pct": 1.64,
+      "avg_yield_pct": 1.24,
+      "best_price": 3658.5,
+      "better_price": 4855.1,
+      "vs_best_pct": 2.1,
+      "vs_better_pct": -23.1,
+      "level": "Better"
+    },
     {
       "code": "9008",
       "name": "京王電鉄",
