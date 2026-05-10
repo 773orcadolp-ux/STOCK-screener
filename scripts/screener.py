@@ -10,9 +10,9 @@ import pytz
 JST = pytz.timezone("Asia/Tokyo")
 
 # Test mode
-TEST_MODE = False  # True=5 stocks / False=Nikkei 225
-TEST_CODES = ["7203", "6758", "9984", "8306", "7267"]
-TEST_NAMES = ["Toyota", "Sony", "SoftBank", "MUFG", "Honda"]
+TEST_MODE = True
+TEST_CODES = ["7203"]   # トヨタだけ
+TEST_NAMES = ["Toyota"]
 
 # Filter and history
 MIN_YIELD = 0.030
