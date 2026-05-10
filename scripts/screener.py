@@ -1,3 +1,4 @@
+import yfinance as yf
 import pandas as pd
 import requests
 import json
@@ -6,15 +7,19 @@ import time
 from datetime import datetime, timedelta
 import pytz
 
-JST = pytz.timezone('Asia/Tokyo')
+JST = pytz.timezone("Asia/Tokyo")
 
-# ─── テストモード設定 ───
-TEST_MODE = False  # True=トヨタのみ / False=日経225全銘柄
-TEST_CODE5 = "72030"
-TEST_NAME = "トヨタ自動車"
+# Test mode
+TEST_MODE = False  # True=5 stocks / False=Nikkei 225
+TEST_CODES = ["7203", "6758", "9984", "8306", "7267"]
+TEST_NAMES = ["Toyota", "Sony", "SoftBank", "MUFG", "Honda"]
 
-# ─── 日経225銘柄リスト（4桁コード） ───
-NIKKEI_225_CODES = [
+# Filter and history
+MIN_YIELD = 0.030
+YEARS_BACK = 3
+
+# Nikkei 225 codes (4-digit)
+NIKKEI_225 = [
     "1332","1333","1605","1721","1801","1802","1803","1808","1812","1925",
     "1928","1963","2002","2269","2282","2413","2432","2501","2502","2503",
     "2531","2768","2801","2802","2871","2914","3086","3092","3099","3101",
@@ -41,309 +46,80 @@ NIKKEI_225_CODES = [
     "9432","9433","9434","9437","9501","9502","9503","9531","9532","9602",
     "9613","9735","9766","9831","9843","9983","9984"
 ]
-# ─────────────────────
 
 
-def get_headers():
-    return {"x-api-key": os.environ["JQUANTS_API_KEY"]}
-
-
-def fetch_with_pagination(url, headers, params, key="data"):
-    """ページング対応＋429リトライの汎用GET"""
-    all_items = []
-    while True:
-        resp = requests.get(url, headers=headers, params=params, timeout=30)
-        if resp.status_code == 429:
-            print(f"  429エラー → 60秒待機")
-            time.sleep(60)
-            continue
-        if resp.status_code != 200:
-            print(f"  HTTPエラー: {resp.status_code} {resp.text[:200]}")
-            return []
-        data = resp.json()
-        all_items.extend(data.get(key, []))
-        pkey = data.get("pagination_key")
-        if not pkey:
-            break
-        params["pagination_key"] = pkey
-        time.sleep(0.5)
-    return all_items
-
-
-def get_target_stocks(headers):
-    """対象銘柄取得（テスト時はトヨタのみ、本番時は日経225）"""
-    if TEST_MODE:
-        return [{"Code": TEST_CODE5, "Code4": TEST_CODE5[:4], "CoName": TEST_NAME}]
-    
-    items = fetch_with_pagination(
-        "https://api.jquants.com/v2/equities/master",
-        headers, {}, key="data"
-    )
-    df = pd.DataFrame(items)
-    df["Code4"] = df["Code"].astype(str).str[:4]
-    df = df[df["Code4"].isin(NIKKEI_225_CODES)]
-    print(f"日経225マッチ銘柄数: {len(df)}/{len(NIKKEI_225_CODES)}")
-    return df[["Code", "Code4", "CoName"]].to_dict("records")
-
-
-def fetch_prices_by_date(date_str: str, headers):
-    """指定日付の全銘柄株価を一括取得（重複Code4除去あり）"""
-    items = fetch_with_pagination(
-        "https://api.jquants.com/v2/equities/bars/daily",
-        headers, {"date": date_str}, key="data"
-    )
-    if not items:
-        return None
-    df = pd.DataFrame(items)
-    if "AdjC" not in df.columns:
-        return None
-    df = df[["Code", "AdjC"]].copy()
-    df["AdjC"] = pd.to_numeric(df["AdjC"], errors="coerce")
-    df = df.dropna(subset=["AdjC"])
-    df = df[df["AdjC"] > 0]
-    df["Code4"] = df["Code"].astype(str).str[:4]
-    df = df.drop_duplicates(subset=["Code4"], keep="first")
-    return df.set_index("Code4")["AdjC"]
-
-
-def get_price_samples(headers, num_months: int = 24):
-    """過去N月の月末株価をサンプリング取得"""
-    print(f"\n=== 過去{num_months}ヶ月分の株価サンプリング ===")
-    samples = {}
-    today = datetime.now()
-    base = today - timedelta(days=85)
-    
-    target_dates = []
-    for i in range(num_months):
-        d = base - timedelta(days=30 * i)
-        last_day = d.replace(day=1) + timedelta(days=32)
-        last_day = last_day.replace(day=1) - timedelta(days=1)
-        while last_day.weekday() >= 5:
-            last_day -= timedelta(days=1)
-        if last_day > base:
-            last_day = base
-            while last_day.weekday() >= 5:
-                last_day -= timedelta(days=1)
-        target_dates.append(last_day.strftime("%Y-%m-%d"))
-    
-    for i, date_str in enumerate(target_dates):
-        prices = fetch_prices_by_date(date_str, headers)
-        if prices is not None and len(prices) > 0:
-            samples[date_str] = prices
-            print(f"  [{i+1}/{num_months}] {date_str}: {len(prices)}銘柄")
-        time.sleep(13)
-    
-    return samples
-
-
-def get_current_prices(headers):
-    """無料プランでの『最新株価』=12週間前あたり"""
-    base = datetime.now() - timedelta(days=85)
-    for i in range(14):
-        d = base - timedelta(days=i)
-        if d.weekday() >= 5:
-            continue
-        date_str = d.strftime("%Y-%m-%d")
-        prices = fetch_prices_by_date(date_str, headers)
-        if prices is not None and len(prices) > 100:
-            print(f"現在株価日付: {date_str} ({len(prices)}銘柄)")
-            return prices
-        time.sleep(13)
-    return None
-
-
-def fetch_financial_summary(code5: str, headers):
-    """財務情報（配当データ含む）取得"""
-    items = fetch_with_pagination(
-        "https://api.jquants.com/v2/fins/summary",
-        headers, {"code": code5}, key="data"
-    )
-    return items
-
-
-def extract_dividend_history(fin_items: list, current_year: int) -> dict:
-    """財務情報から年次配当履歴を抽出"""
-    annual = {}
-    forecast = None
-    
-    for item in fin_items:
-        disc_date = item.get("DiscDate", "")
-        try:
-            disc_year = int(disc_date[:4])
-        except:
-            continue
-        
-        doc_type = item.get("DocType", "")
-        
-        if "FY" in doc_type and "Forecast" not in doc_type:
-            div_ann = item.get("DivAnn")
-            if div_ann not in (None, "", "-"):
-                try:
-                    val = float(div_ann)
-                    if val > 0:
-                        cur_fy_en = item.get("CurFYEn", "")
-                        try:
-                            fy_year = int(cur_fy_en[:4])
-                            annual[fy_year] = val
-                        except:
-                            annual[disc_year] = val
-                except:
-                    pass
-        
-        nx_div = item.get("NxFDivAnn")
-        if nx_div not in (None, "", "-"):
-            try:
-                val = float(nx_div)
-                if val > 0:
-                    forecast = val
-            except:
-                pass
-        
-        f_div = item.get("FDivAnn")
-        if f_div not in (None, "", "-"):
-            try:
-                val = float(f_div)
-                if val > 0 and forecast is None:
-                    forecast = val
-            except:
-                pass
-    
-    return {"annual": annual, "forecast": forecast}
-
-
-def send_slack(webhook, text):
-    """Slack通知（エラーログ付き）"""
+def analyze_stock(code, name):
     try:
-        resp = requests.post(webhook, json={"text": text}, timeout=10)
-        print(f"Slack通知 status: {resp.status_code}, len={len(text)}")
-        if resp.status_code != 200:
-            print(f"Slack エラー詳細: {resp.text[:300]}")
-        return resp.status_code == 200
-    except Exception as e:
-        print(f"Slack送信失敗: {e}")
-        return False
-
-
-def main():
-    print("=" * 50)
-    print(f"配当利回りスクリーナー V2 起動 (TEST={TEST_MODE})")
-    print("=" * 50)
-    
-    headers = get_headers()
-    
-    # 1. 銘柄リスト
-    stocks = get_target_stocks(headers)
-    if not stocks:
-        print("銘柄取得失敗")
-        return
-    print(f"対象銘柄数: {len(stocks)}")
-    
-    # 2. 過去2年の月末株価サンプリング
-    price_samples = get_price_samples(headers, num_months=24)
-    if not price_samples:
-        print("株価サンプリング失敗")
-        return
-    
-    # 3. 現在株価
-    current_prices = get_current_prices(headers)
-    if current_prices is None:
-        print("現在株価取得失敗")
-        return
-    
-    # 4. 年次平均株価計算
-    print("\n=== 年次平均株価計算 ===")
-    year_avg = {}
-    for date_str, prices in price_samples.items():
-        year = int(date_str[:4])
-        for code4, price in prices.items():
-            year_avg.setdefault(code4, {}).setdefault(year, []).append(float(price))
-    
-    # 5. スクリーニング
-    print("\n=== 配当データ取得 & スクリーニング ===")
-    best_stocks = []
-    better_stocks = []
-    now_year = datetime.now(JST).year
-    
-    for i, stock in enumerate(stocks):
-        code5 = stock["Code"]
-        code4 = stock["Code4"]
-        name = stock["CoName"]
+        ticker = yf.Ticker(code + ".T")
+        info = ticker.info
         
-        if code4 not in current_prices.index:
-            if TEST_MODE:
-                print(f"  [{name}] 現在株価データなし → スキップ")
-            continue
+        current_price = info.get("currentPrice", None)
+        if not current_price:
+            return None, "no_price"
+        cp = float(current_price)
         
-        cp_val = current_prices[code4]
-        if hasattr(cp_val, 'iloc'):
-            cp_val = cp_val.iloc[0]
-        cp = float(cp_val)
+        forecast_div = info.get("dividendRate", None)
+        if not forecast_div:
+            forecast_div = info.get("trailingAnnualDividendRate", None)
+        if not forecast_div or forecast_div <= 0:
+            return None, "no_div"
+        forecast_div = float(forecast_div)
         
-        if code4 not in year_avg:
-            if TEST_MODE:
-                print(f"  [{name}] 年次株価データなし → スキップ")
-            continue
-        yr_data = year_avg[code4]
+        current_yield = forecast_div / cp
         
-        fin_items = fetch_financial_summary(code5, headers)
-        if not fin_items:
-            if TEST_MODE:
-                print(f"  [{name}] 財務情報取得失敗")
-            time.sleep(13)
-            continue
+        if current_yield < MIN_YIELD:
+            return None, "low_yield"
         
-        if TEST_MODE:
-            print(f"\n  [{name}] 財務情報レコード数: {len(fin_items)}")
+        divs = ticker.dividends
+        if len(divs) == 0:
+            return None, "no_div_hist"
         
-        div_info = extract_dividend_history(fin_items, now_year)
-        annual_div = div_info["annual"]
-        forecast_div = div_info["forecast"]
+        annual_div = divs.groupby(divs.index.year).sum()
         
-        if TEST_MODE:
-            print(f"  年次配当履歴: {annual_div}")
-            print(f"  予想配当: {forecast_div}")
-            print(f"  現在株価: {cp}円")
-            print(f"  年次平均株価: {[(y, round(sum(p)/len(p), 1)) for y, p in yr_data.items()]}")
+        end_d = datetime.now()
+        start_d = end_d - timedelta(days=YEARS_BACK * 366)
+        hist = ticker.history(start=start_d.strftime("%Y-%m-%d"),
+                               end=end_d.strftime("%Y-%m-%d"),
+                               auto_adjust=False)
+        if len(hist) == 0:
+            return None, "no_price_hist"
+        
+        hist_year = hist.copy()
+        hist_year["Year"] = hist_year.index.year
+        year_avg_price = hist_year.groupby("Year")["Close"].mean()
+        
+        target_years = sorted([y for y in annual_div.index if y in year_avg_price.index])
+        target_years = target_years[-YEARS_BACK:]
         
         annual_yields = []
-        for year, div_val in annual_div.items():
-            yr_prices = yr_data.get(year, [])
-            if div_val > 0 and yr_prices:
-                avg_p = sum(yr_prices) / len(yr_prices)
-                if avg_p > 0:
-                    yld = div_val / avg_p
-                    annual_yields.append(yld)
-                    if TEST_MODE:
-                        print(f"  {year}年: 配当{div_val}円 / 平均株価{avg_p:.0f}円 = 利回り{yld*100:.2f}%")
+        for y in target_years:
+            div_val = float(annual_div[y])
+            avg_p = float(year_avg_price[y])
+            if div_val > 0 and avg_p > 0:
+                annual_yields.append(div_val / avg_p)
         
-        if not annual_yields:
-            if TEST_MODE:
-                print(f"  [{name}] 利回り計算不可 → スキップ")
-            time.sleep(13)
-            continue
+        if len(annual_yields) == 0:
+            return None, "no_yields"
         
         max_y = max(annual_yields)
         avg_y = sum(annual_yields) / len(annual_yields)
         
-        recent_div = forecast_div
-        if not recent_div and annual_div:
-            recent_div = annual_div[max(annual_div.keys())]
+        best_p = forecast_div / max_y
+        better_p = forecast_div / avg_y
         
-        if not recent_div or recent_div <= 0:
-            if TEST_MODE:
-                print(f"  [{name}] 配当予想なし → スキップ")
-            time.sleep(13)
-            continue
-        
-        best_p = recent_div / max_y
-        better_p = recent_div / avg_y
-        current_yield = recent_div / cp
+        level = None
+        if current_yield > max_y:
+            level = "Premium"
+        elif cp <= best_p:
+            level = "Best"
+        elif cp <= better_p:
+            level = "Better"
         
         result = {
-            "code": code4,
+            "code": code,
             "name": name,
             "current_price": round(cp, 1),
-            "annual_div": round(recent_div, 1),
+            "annual_div": round(forecast_div, 1),
             "current_yield_pct": round(current_yield * 100, 2),
             "max_yield_pct": round(max_y * 100, 2),
             "avg_yield_pct": round(avg_y * 100, 2),
@@ -351,105 +127,157 @@ def main():
             "better_price": round(better_p, 1),
             "vs_best_pct": round((cp / best_p - 1) * 100, 1),
             "vs_better_pct": round((cp / better_p - 1) * 100, 1),
+            "level": level,
         }
-        
-        if TEST_MODE:
-            print(f"\n  ━━━ {name} スクリーニング結果 ━━━")
-            print(f"  現在株価: {result['current_price']}円")
-            print(f"  予想配当: {result['annual_div']}円")
-            print(f"  現在利回り: {result['current_yield_pct']}%")
-            print(f"  最大利回り(2年): {result['max_yield_pct']}%")
-            print(f"  平均利回り(2年): {result['avg_yield_pct']}%")
-            print(f"  Best水準: {result['best_price']}円 (現在比{result['vs_best_pct']:+.1f}%)")
-            print(f"  Better水準: {result['better_price']}円 (現在比{result['vs_better_pct']:+.1f}%)")
-            if current_yield >= max_y:
-                print(f"  → 除外: 現在利回り({current_yield*100:.2f}%) ≥ 過去最大利回り({max_y*100:.2f}%)")
-            print(f"  ━━━━━━━━━━━━━━━━━━━━━━")
-        
-        # 【修正】現在利回りが過去最大利回りを超えていない銘柄のみ対象
-        if current_yield < max_y:
-            if cp <= best_p:
-                best_stocks.append({**result, "level": "Best"})
-            elif cp <= better_p:
-                better_stocks.append({**result, "level": "Better"})
-        
-        if not TEST_MODE and (i + 1) % 25 == 0:
-            print(f"  進捗: {i+1}/{len(stocks)} | Best={len(best_stocks)} Better={len(better_stocks)}")
-        time.sleep(13)
+        return result, "ok"
+    except Exception as e:
+        return None, "error:" + str(e)[:50]
+
+
+def send_slack(webhook, text):
+    try:
+        resp = requests.post(webhook, json={"text": text}, timeout=10)
+        print("Slack status: " + str(resp.status_code) + ", len=" + str(len(text)))
+        if resp.status_code != 200:
+            print("Slack error: " + resp.text[:300])
+        return resp.status_code == 200
+    except Exception as e:
+        print("Slack failed: " + str(e))
+        return False
+
+
+def main():
+    print("=" * 50)
+    print("Stock Screener (Yahoo) - TEST=" + str(TEST_MODE))
+    print("=" * 50)
     
-    print(f"\n完了: Best={len(best_stocks)} Better={len(better_stocks)}")
+    webhook_env = os.environ.get("SLACK_WEBHOOK_URL", "")
+    print("DEBUG webhook length: " + str(len(webhook_env)))
     
-    # 6. 結果保存
+    if TEST_MODE:
+        codes = TEST_CODES
+        names = TEST_NAMES
+    else:
+        codes = NIKKEI_225
+        names = NIKKEI_225  # use code as name (Yahoo info has names anyway)
+    
+    print("Target: " + str(len(codes)) + " stocks")
+    print("Filter: min yield " + str(MIN_YIELD*100) + "%, " + str(YEARS_BACK) + "yr history")
+    print("")
+    
+    premium_stocks = []
+    best_stocks = []
+    better_stocks = []
+    stats = {"ok": 0, "no_price": 0, "no_div": 0, "low_yield": 0,
+             "no_div_hist": 0, "no_price_hist": 0, "no_yields": 0, "error": 0}
+    
+    for i, (code, name) in enumerate(zip(codes, names)):
+        # Get Yahoo company name on the fly if name == code
+        result, status = analyze_stock(code, name)
+        
+        # Try to get the real company name from Yahoo
+        if result:
+            try:
+                ticker = yf.Ticker(code + ".T")
+                short_name = ticker.info.get("shortName", code)
+                result["name"] = short_name
+            except:
+                pass
+        
+        if status == "ok":
+            stats["ok"] += 1
+            if result and result["level"]:
+                if result["level"] == "Premium":
+                    premium_stocks.append(result)
+                elif result["level"] == "Best":
+                    best_stocks.append(result)
+                elif result["level"] == "Better":
+                    better_stocks.append(result)
+        elif status.startswith("error"):
+            stats["error"] += 1
+        else:
+            stats[status] = stats.get(status, 0) + 1
+        
+        if (i + 1) % 25 == 0:
+            print("[" + str(i+1) + "/" + str(len(codes)) + "] Premium=" + str(len(premium_stocks)) +
+                  " Best=" + str(len(best_stocks)) + " Better=" + str(len(better_stocks)))
+        
+        time.sleep(0.5)
+    
+    print("")
+    print("=" * 50)
+    print("Stats: " + str(stats))
+    print("Hits: Premium=" + str(len(premium_stocks)) + " Best=" + str(len(best_stocks)) + " Better=" + str(len(better_stocks)))
+    
     os.makedirs("docs", exist_ok=True)
     payload = {
         "updated_at": datetime.now(JST).isoformat(),
+        "premium_stocks": sorted(premium_stocks, key=lambda x: -x["current_yield_pct"]),
         "best_stocks": sorted(best_stocks, key=lambda x: x["vs_best_pct"]),
         "better_stocks": sorted(better_stocks, key=lambda x: x["vs_better_pct"]),
     }
     with open("docs/results.json", "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
-    print("結果保存完了")
+    print("Saved")
     
-    # 7. Slack通知（エラー検知＋メッセージ分割対応）
-    webhook = os.environ.get("SLACK_WEBHOOK_URL", "")
+    webhook = webhook_env
     if not webhook:
-        print("Slack Webhook未設定")
+        print("No webhook")
         return
     
     now_str = datetime.now(JST).strftime("%Y/%m/%d %H:%M")
     
     if TEST_MODE:
-        text = (
-            f":test_tube: *テスト実行完了* ({now_str} JST)\n"
-            f"対象: {TEST_NAME}\n"
-            f"Best該当: {len(best_stocks)}件 / Better該当: {len(better_stocks)}件"
-        )
+        text = ":test_tube: Yahoo test done (" + now_str + " JST)\n"
+        text += "Target: " + str(len(codes)) + " stocks\n"
+        text += "Premium: " + str(len(premium_stocks)) + " / Best: " + str(len(best_stocks)) + " / Better: " + str(len(better_stocks))
         send_slack(webhook, text)
         return
     
-    # 本番モード: 該当なしでも通知
-    if not best_stocks and not better_stocks:
-        text = f":mag: *配当スクリーニング完了* ({now_str} JST)\n本日は該当銘柄なし"
+    if not premium_stocks and not best_stocks and not better_stocks:
+        text = ":mag: Stock Screener done (" + now_str + " JST)\nNo hits today"
         send_slack(webhook, text)
         return
     
-    # ヘッダー
-    header = (
-        f":bar_chart: *配当スクリーニング結果* ({now_str} JST)\n"
-        f"Best: {len(best_stocks)}件 / Better: {len(better_stocks)}件"
-    )
+    header = ":bar_chart: *Stock Screener Result* (" + now_str + " JST)\n"
+    header += "Premium: " + str(len(premium_stocks)) + " / Best: " + str(len(best_stocks)) + " / Better: " + str(len(better_stocks))
     send_slack(webhook, header)
     time.sleep(1)
     
-    # Best銘柄（10件ずつ分割）
+    if premium_stocks:
+        for chunk_start in range(0, len(premium_stocks), 10):
+            chunk = premium_stocks[chunk_start:chunk_start + 10]
+            lines = ["*:gem: Premium (" + str(chunk_start+1) + "-" + str(chunk_start+len(chunk)) + ")*"]
+            for s in chunk:
+                lines.append("- " + s["code"] + " " + s["name"] +
+                             " price=" + str(s["current_price"]) +
+                             " yield=" + str(s["current_yield_pct"]) + "% (max " + str(s["max_yield_pct"]) + "%)")
+            send_slack(webhook, "\n".join(lines))
+            time.sleep(1)
+    
     if best_stocks:
         for chunk_start in range(0, len(best_stocks), 10):
             chunk = best_stocks[chunk_start:chunk_start + 10]
-            lines = [f"*🏆 Best ({chunk_start+1}〜{chunk_start+len(chunk)}件目)*"]
+            lines = ["*:trophy: Best (" + str(chunk_start+1) + "-" + str(chunk_start+len(chunk)) + ")*"]
             for s in chunk:
-                lines.append(
-                    f"• {s['code']} {s['name']} "
-                    f"現在{s['current_price']}円 / 水準{s['best_price']}円 "
-                    f"利回り{s['current_yield_pct']}%"
-                )
+                lines.append("- " + s["code"] + " " + s["name"] +
+                             " price=" + str(s["current_price"]) + " level=" + str(s["best_price"]) +
+                             " yield=" + str(s["current_yield_pct"]) + "%")
             send_slack(webhook, "\n".join(lines))
             time.sleep(1)
     
-    # Better銘柄（10件ずつ分割）
     if better_stocks:
         for chunk_start in range(0, len(better_stocks), 10):
             chunk = better_stocks[chunk_start:chunk_start + 10]
-            lines = [f"*✅ Better ({chunk_start+1}〜{chunk_start+len(chunk)}件目)*"]
+            lines = ["*:white_check_mark: Better (" + str(chunk_start+1) + "-" + str(chunk_start+len(chunk)) + ")*"]
             for s in chunk:
-                lines.append(
-                    f"• {s['code']} {s['name']} "
-                    f"現在{s['current_price']}円 / 水準{s['better_price']}円 "
-                    f"利回り{s['current_yield_pct']}%"
-                )
+                lines.append("- " + s["code"] + " " + s["name"] +
+                             " price=" + str(s["current_price"]) + " level=" + str(s["better_price"]) +
+                             " yield=" + str(s["current_yield_pct"]) + "%")
             send_slack(webhook, "\n".join(lines))
             time.sleep(1)
     
-    print("Slack通知完了")
+    print("Slack done")
 
 
 if __name__ == "__main__":
