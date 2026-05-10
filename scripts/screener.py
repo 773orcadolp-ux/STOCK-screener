@@ -202,7 +202,7 @@ def main():
             print("[" + str(i+1) + "/" + str(len(codes)) + "] Premium=" + str(len(premium_stocks)) +
                   " Best=" + str(len(best_stocks)) + " Better=" + str(len(better_stocks)))
         
-        time.sleep(0.5)
+        time.sleep(5)
     
     print("")
     print("=" * 50)
