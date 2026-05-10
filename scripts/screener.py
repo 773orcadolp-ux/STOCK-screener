@@ -131,7 +131,10 @@ def analyze_stock(code, name):
         }
         return result, "ok"
     except Exception as e:
-        return None, "error:" + str(e)[:50]
+    import traceback
+    print("ERR " + code + ":")
+    print(traceback.format_exc())
+    return None, "error"
 
 
 def send_slack(webhook, text):
