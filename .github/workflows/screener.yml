@@ -1,8 +1,8 @@
 name: Stock Screener
 
 on:
-  schedule:
-    - cron: "0 9 * * 1-5"     # UTC 9時 = JST 18時（月-金）
+  # schedule:
+  #   - cron: "0 9 * * 1-5"
   workflow_dispatch:
 
 permissions:
